@@ -581,17 +581,19 @@ function App(){
 
   function doRefresh(){
     setRefreshAnim(true);
-    // Rebuild holdings from current trades — preserves manual metadata edits (price, sector etc.)
-    const rebuilt=rebuildHoldingsFromTrades(trades, holdings);
-    // Merge: trade-based shares/avgCost, but keep any manual price/intrinsic/sector edits
-    const curMap={};
-    holdings.forEach(h=>{curMap[h.ticker]=h;});
-    const merged=rebuilt.map(h=>{
-      const cur=curMap[h.ticker];
-      if(!cur)return h;
-      return{...cur,shares:h.shares,avgCost:h.avgCost};
-    });
-    setHoldings(merged);
+    // Only rebuild holdings if there are pending trade changes
+    // Otherwise just bump refreshKey to force useMemo recompute
+    if(pendingChanges>0){
+      const rebuilt=rebuildHoldingsFromTrades(trades, holdings);
+      const curMap={};
+      holdings.forEach(h=>{curMap[h.ticker]=h;});
+      const merged=rebuilt.map(h=>{
+        const cur=curMap[h.ticker];
+        if(!cur)return h;
+        return{...cur,shares:h.shares,avgCost:h.avgCost};
+      });
+      setHoldings(merged);
+    }
     setRefreshKey(k=>k+1);
     setLastRefresh(new Date());
     setPendingChanges(0);
