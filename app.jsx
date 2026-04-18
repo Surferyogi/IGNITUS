@@ -25,7 +25,7 @@ const fmt=(n,d=2)=>n==null?"--":n.toLocaleString("en-US",{minimumFractionDigits:
 const fmtPct=n=>n==null?"--":(n>=0?"+":"")+fmt(n)+"%";
 const toSGD=(v,mkt)=>v*(MKT[mkt]?.r??1.36);
 const fmtL=(n,mkt,d=2)=>n==null?"--":(MKT[mkt]?.symbol??"$")+fmt(Math.abs(n),d);
-const fmtS=(n,d=0)=>n==null?"--":"S$"+fmt(Math.abs(n),d);
+const fmtS=(n,d=2)=>n==null?"--":"S$"+fmt(Math.abs(n),d);
 const SECTORS=["Technology","Healthcare","Financials","Consumer Disc.","Industrials","Energy","Utilities","Materials","Real Estate","Comm. Services","Consumer Staples"];
 const MS_STYLES=["Large Growth","Large Blend","Large Value","Mid Growth","Mid Blend","Mid Value","Small Growth","Small Blend","Small Value"];
 const SCOL=[C.accent,C.green,C.gold,C.purple,"#FF8C42","#FF4D6A","#62D2E8","#C084FC","#FDE68A","#A3E635","#FB923C"];
