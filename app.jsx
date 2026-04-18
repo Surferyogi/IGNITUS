@@ -581,19 +581,8 @@ function App(){
 
   function doRefresh(){
     setRefreshAnim(true);
-    // Only rebuild holdings if there are pending trade changes
-    // Otherwise just bump refreshKey to force useMemo recompute
-    if(pendingChanges>0){
-      const rebuilt=rebuildHoldingsFromTrades(trades, holdings);
-      const curMap={};
-      holdings.forEach(h=>{curMap[h.ticker]=h;});
-      const merged=rebuilt.map(h=>{
-        const cur=curMap[h.ticker];
-        if(!cur)return h;
-        return{...cur,shares:h.shares,avgCost:h.avgCost};
-      });
-      setHoldings(merged);
-    }
+    // Only bump refreshKey to force all useMemo to recompute
+    // Never touch holdings state here - that would corrupt live price data
     setRefreshKey(k=>k+1);
     setLastRefresh(new Date());
     setPendingChanges(0);
