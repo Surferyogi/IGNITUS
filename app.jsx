@@ -370,7 +370,8 @@ function App(){
   const [refreshAnim,setRefreshAnim]=useState(false);
   const [pendingChanges,setPendingChanges]=useState(0);
   const [senateData,setSenateData]=useState([]);
-  const [senatePrices,setSenatePrices]=useState({});
+  const [senatePrices,setSenatePrices]=useState({});    // {TICKER:{price,intrinsic}} live prices
+  const [senateHistPrices,setSenateHistPrices]=useState({}); // {TICKER_DATE: price} historical
   const [senateLoading,setSenateLoading]=useState(false);
   const [senateUpdating,setSenateUpdating]=useState(false);
 
@@ -533,6 +534,22 @@ function App(){
     }
   }
 
+
+  async function fetchSenateHistPrice(ticker, date){
+    // Fetch historical closing price on transaction date via Edge Function
+    const key=ticker+'_'+date;
+    if(senateHistPrices[key]!==undefined) return; // already fetched
+    try{
+      const res=await fetch('https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'senate_history',ticker,date}),
+      });
+      if(res.ok){
+        const d=await res.json();
+        setSenateHistPrices(prev=>({...prev,[key]:d.price||0}));
+      }
+    }catch(e){setSenateHistPrices(prev=>({...prev,[key]:0}));}
+  }
 
   async function updateSenateData(){
     setSenateUpdating(true);
@@ -1262,6 +1279,12 @@ function App(){
               const intrinsic=inPort?inPort.intrinsic:(extPrice?.intrinsic||0);
               const avgCost=inPort?inPort.avgCost:0;
               const mkt=inPort?inPort.mkt:"US";
+              const histKey=s.ticker+'_'+s.date;
+              const histPrice=senateHistPrices[histKey];
+              // Trigger fetch if not yet loaded
+              if(histPrice===undefined) fetchSenateHistPrice(s.ticker,s.date);
+              const pricePaid=histPrice||0;
+              const vsNow=pricePaid>0&&livePrice>0?((livePrice-pricePaid)/pricePaid*100):null;
               const gainPct=avgCost>0?((livePrice-avgCost)/avgCost*100):null;
               const upside=intrinsic>0&&livePrice>0?((intrinsic-livePrice)/livePrice*100):null;
               return(
@@ -1284,22 +1307,29 @@ function App(){
                       <div style={{fontSize:10,color:C.gold,fontWeight:600}}>{s.amount}</div>
                     </div>
                   </div>
-                  {/* Price strip — always show */}
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,background:inPort?C.accent+"0D":C.surface,borderRadius:7,padding:"7px 10px",border:inPort?`1px solid ${C.accent}22`:"none"}}>
+                  {/* Price strip — 4 columns: Price Paid | Live Price | Avg Cost | Intrinsic */}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:4,background:inPort?C.accent+"0D":C.surface,borderRadius:7,padding:"7px 10px",border:inPort?`1px solid ${C.accent}22`:"none"}}>
                     <div>
+                      <div style={{fontSize:8,color:C.gold,fontWeight:700}}>Sen. Paid</div>
+                      <div style={{fontSize:11,fontWeight:700,color:pricePaid>0?C.gold:C.border}}>
+                        {pricePaid>0?("$"+fmt(pricePaid)):"…"}
+                      </div>
+                      <div style={{fontSize:8,color:C.muted}}>on {s.date?.slice(5)}</div>
+                    </div>
+                    <div style={{textAlign:"center"}}>
                       <div style={{fontSize:8,color:C.muted}}>Live Price</div>
-                      <div style={{fontSize:12,fontWeight:700}}>{livePrice>0?fmtL(livePrice,mkt):"—"}</div>
-                      {gainPct!=null&&<div style={{fontSize:9,fontWeight:700,color:gainPct>=0?C.green:C.red}}>{gainPct>=0?"+":""}{fmt(gainPct,1)}% vs cost</div>}
+                      <div style={{fontSize:11,fontWeight:700}}>{livePrice>0?fmtL(livePrice,mkt):"—"}</div>
+                      {vsNow!=null&&<div style={{fontSize:8,fontWeight:700,color:vsNow>=0?C.green:C.red}}>{vsNow>=0?"+":""}{fmt(vsNow,1)}% since</div>}
                     </div>
                     <div style={{textAlign:"center"}}>
                       <div style={{fontSize:8,color:C.muted}}>Avg Cost</div>
-                      <div style={{fontSize:12,fontWeight:700,color:avgCost>0?C.mutedLight:C.border}}>{avgCost>0?fmtL(avgCost,mkt):"—"}</div>
-                      {avgCost>0&&<div style={{fontSize:8,color:C.muted}}>your cost</div>}
+                      <div style={{fontSize:11,fontWeight:700,color:avgCost>0?C.mutedLight:C.border}}>{avgCost>0?fmtL(avgCost,mkt):"—"}</div>
+                      {gainPct!=null&&<div style={{fontSize:8,fontWeight:700,color:gainPct>=0?C.green:C.red}}>{gainPct>=0?"+":""}{fmt(gainPct,1)}%</div>}
                     </div>
                     <div style={{textAlign:"right"}}>
                       <div style={{fontSize:8,color:C.muted}}>{inPort?"Intrinsic":"Graham №"}</div>
-                      <div style={{fontSize:12,fontWeight:700,color:upside!=null?(upside>=0?C.green:C.red):C.border}}>{intrinsic>0?fmtL(intrinsic,mkt):"—"}</div>
-                      {upside!=null&&<div style={{fontSize:9,fontWeight:700,color:upside>=0?C.green:C.red}}>{upside>=0?"+":""}{fmt(upside,1)}% upside</div>}
+                      <div style={{fontSize:11,fontWeight:700,color:upside!=null?(upside>=0?C.green:C.red):C.border}}>{intrinsic>0?fmtL(intrinsic,mkt):"—"}</div>
+                      {upside!=null&&<div style={{fontSize:8,fontWeight:700,color:upside>=0?C.green:C.red}}>{upside>=0?"+":""}{fmt(upside,1)}% up</div>}
                     </div>
                   </div>
                 </div>
