@@ -307,68 +307,57 @@ function App(){
     });
   },[]);
 
-  // ── Live price updater — Stooq.com (free, no key, CORS enabled) ─────────────
+  // ── Live price updater — Supabase Edge Function → Yahoo Finance ─────────────
   async function fetchLivePrices(currentHoldings) {
     if (!currentHoldings || currentHoldings.length === 0) return;
     setPriceStatus('fetching');
-    const results = {};
 
-    // Convert ticker to Stooq format
-    function toStooq(ticker, mkt) {
-      const t = ticker.toLowerCase();
-      if (mkt === 'US')  return t + '.us';
-      if (mkt === 'SG')  return t.replace('.si','') + '.si';
-      if (mkt === 'CN')  return t.replace('.hk','') + '.hk';
-      if (mkt === 'JP')  return t.replace('.t','')  + '.jp';
-      if (mkt === 'EU')  return t + '.us'; // OTC listed in US
-      return t + '.us';
-    }
+    const tickers = currentHoldings.map(h => h.ticker);
+    const EDGE_URL = 'https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/get-prices';
 
-    // Fetch single ticker from Stooq
-    async function fetchOne(h) {
-      const sym = toStooq(h.ticker, h.mkt);
-      const url = 'https://stooq.com/q/l/?s=' + sym + '&f=sd2t2ohlcv&h&e=json';
-      try {
-        const res = await fetch(url);
-        if (!res.ok) return;
-        const d = await res.json();
-        const q = d?.symbols?.[0];
-        const p = q?.close || q?.last;
-        if (p && p > 0 && p !== 'N/D') {
-          results[h.ticker] = parseFloat((+p).toFixed(4));
-        }
-      } catch(e) {
-        // silently skip failed tickers
-      }
-    }
-
-    // Fetch in parallel groups of 10 to avoid rate limiting
-    const GROUP = 10;
-    for (let i = 0; i < currentHoldings.length; i += GROUP) {
-      const group = currentHoldings.slice(i, i + GROUP);
-      await Promise.all(group.map(fetchOne));
-      if (i + GROUP < currentHoldings.length) await new Promise(r => setTimeout(r, 500));
-    }
-
-    const n = Object.keys(results).length;
-    console.log('Stooq prices:', n + '/' + currentHoldings.length,
-      Object.entries(results).slice(0,5).map(([k,v])=>k+'='+v).join(', '));
-
-    if (n === 0) { setPriceStatus('error'); return; }
-
-    setHoldings(prev => {
-      const updated = prev.map(h => {
-        const p = results[h.ticker];
-        return p && p > 0 ? { ...h, price: p } : h;
+    try {
+      const res = await fetch(EDGE_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer sb_publishable_y-wyxLIPM0eiQOezFH6UYQ_WEJzxLGz',
+        },
+        body: JSON.stringify({ tickers }),
       });
-      if (window.portfolioDB) {
-        window.portfolioDB.updateHoldings(updated).catch(e => console.warn('DB:', e));
+
+      if (!res.ok) {
+        const err = await res.text();
+        console.error('Edge function error:', res.status, err);
+        setPriceStatus('error');
+        return;
       }
-      return updated;
-    });
-    setPriceUpdated(new Date());
-    setPriceStatus('done');
-    setRefreshKey(k => k + 1);
+
+      const data = await res.json();
+      const results = data.prices || {};
+      const n = Object.keys(results).length;
+      console.log('Prices from edge fn:', n + '/' + tickers.length,
+        Object.entries(results).slice(0,5).map(([k,v])=>k+'='+v).join(', '));
+
+      if (n === 0) { setPriceStatus('error'); return; }
+
+      setHoldings(prev => {
+        const updated = prev.map(h => {
+          const p = results[h.ticker];
+          return p && p > 0 ? { ...h, price: p } : h;
+        });
+        if (window.portfolioDB) {
+          window.portfolioDB.updateHoldings(updated).catch(e => console.warn('DB:', e));
+        }
+        return updated;
+      });
+      setPriceUpdated(new Date());
+      setPriceStatus('done');
+      setRefreshKey(k => k + 1);
+
+    } catch(e) {
+      console.error('fetchLivePrices failed:', e.message);
+      setPriceStatus('error');
+    }
   }
 
   // Auto-persist holdings to SQLite whenever they change (debounced 600ms)
