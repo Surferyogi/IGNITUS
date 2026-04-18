@@ -277,6 +277,8 @@ function App(){
   // ── DB persistence ────────────────────────────────────────────────────────────
   const [dbStatus,setDbStatus]=useState('ready'); // 'ready' | 'saving' | 'saved' | 'error'
   const [isLoading,setIsLoading]=useState(true);
+  const [priceStatus,setPriceStatus]=useState('idle'); // 'idle'|'fetching'|'done'|'error'
+  const [priceUpdated,setPriceUpdated]=useState(null); // timestamp of last price update
 
   // ── Load data from Supabase on mount ─────────────────────────────────────────
   const [loadMsg,setLoadMsg]=useState('Connecting...');
@@ -293,6 +295,8 @@ function App(){
           if(!fb[t.ticker]||t.date<fb[t.ticker])fb[t.ticker]=t.date;
         });
         FIRST_BUY=fb;
+        // Fetch live prices after data loads
+        fetchLivePrices(data.holdings);
       } else {
         setLoadMsg('WARNING: holdings empty. data='+JSON.stringify(data).slice(0,200));
       }
@@ -302,6 +306,66 @@ function App(){
       setIsLoading(false);
     });
   },[]);
+
+  // ── Live price updater — Yahoo Finance ───────────────────────────────────────
+  async function fetchLivePrices(currentHoldings) {
+    if (!currentHoldings || currentHoldings.length === 0) return;
+    setPriceStatus('fetching');
+
+    // Yahoo Finance v8 API — works from browser, no API key needed
+    // Use a CORS proxy since Yahoo blocks direct browser requests
+    const YF_BASE = 'https://query1.finance.yahoo.com/v8/finance/chart/';
+    const PROXY   = 'https://api.allorigins.win/raw?url=';
+
+    // Fetch price for a single ticker
+    async function fetchOne(ticker) {
+      try {
+        const url = encodeURIComponent(YF_BASE + ticker + '?interval=1d&range=1d');
+        const res = await fetch(PROXY + url);
+        if (!res.ok) return null;
+        const d = await res.json();
+        const meta = d?.chart?.result?.[0]?.meta;
+        if (!meta) return null;
+        // Use regularMarketPrice, fall back to previousClose
+        const price = meta.regularMarketPrice || meta.previousClose || null;
+        return price ? { ticker, price: parseFloat(price.toFixed(4)) } : null;
+      } catch { return null; }
+    }
+
+    // Fetch in batches of 8 with small delay to avoid rate limiting
+    const tickers = currentHoldings.map(h => h.ticker);
+    const results = {};
+    const BATCH = 8;
+
+    for (let i = 0; i < tickers.length; i += BATCH) {
+      const batch = tickers.slice(i, i + BATCH);
+      const fetched = await Promise.all(batch.map(fetchOne));
+      fetched.forEach(r => { if (r) results[r.ticker] = r.price; });
+      // Small delay between batches
+      if (i + BATCH < tickers.length) await new Promise(r => setTimeout(r, 400));
+    }
+
+    const successCount = Object.keys(results).length;
+    if (successCount === 0) { setPriceStatus('error'); return; }
+
+    // Update holdings with fresh prices
+    setHoldings(prev => {
+      const updated = prev.map(h => {
+        const newPrice = results[h.ticker];
+        return newPrice ? { ...h, price: newPrice } : h;
+      });
+      // Persist updated prices to Supabase in background
+      if (window.portfolioDB) {
+        window.portfolioDB.updateHoldings(updated).catch(e => console.warn('Price save failed:', e));
+      }
+      return updated;
+    });
+
+    setPriceUpdated(new Date());
+    setPriceStatus('done');
+    setRefreshKey(k => k + 1); // force all memos to recompute
+    console.log(`Prices updated: ${successCount}/${tickers.length} tickers`);
+  }
 
   // Auto-persist holdings to SQLite whenever they change (debounced 600ms)
   useEffect(()=>{
@@ -1572,7 +1636,7 @@ function App(){
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
             </div>
             <div style={{fontSize:30,fontWeight:800,letterSpacing:"-1px",lineHeight:1}}>{fmtS(totalValSGD)}</div>
-            <div style={{fontSize:10,color:C.muted,marginTop:3}}>{holdings.length} stocks · {totalShares.toLocaleString()} shares</div>
+            <div style={{fontSize:10,color:C.muted,marginTop:3}}>{holdings.length} stocks · {totalShares.toLocaleString()} shares{priceUpdated&&<span style={{color:C.green}}> · prices {priceUpdated.toLocaleTimeString("en-SG",{hour:"2-digit",minute:"2-digit"})}</span>}</div>
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 10px",borderRadius:20,fontSize:13,fontWeight:700,background:unrealSGD>=0?C.green+"18":C.red+"18",color:unrealSGD>=0?C.green:C.red}}>{unrealSGD>=0?"UP":"DN"} {fmtPct(unrealPct)}</div>
@@ -1592,6 +1656,27 @@ function App(){
         ))}
         {/* Refresh button — right-anchored */}
         <div style={{marginLeft:"auto",padding:"0 10px",display:"flex",alignItems:"center",flexShrink:0}}>
+          {/* Price update status */}
+          {priceStatus==='fetching'&&(
+            <div style={{display:"flex",alignItems:"center",gap:4,padding:"4px 8px",fontSize:9,color:C.gold,fontWeight:700}}>
+              <span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>↻</span> Prices...
+            </div>
+          )}
+          {priceStatus==='done'&&priceUpdated&&(
+            <div style={{display:"flex",alignItems:"center",gap:4,padding:"4px 8px",fontSize:9,color:C.green,fontWeight:700,whiteSpace:"nowrap"}}>
+              ✓ {priceUpdated.toLocaleTimeString("en-SG",{hour:"2-digit",minute:"2-digit"})}
+            </div>
+          )}
+          {priceStatus==='error'&&(
+            <div style={{fontSize:9,color:C.red,padding:"4px 8px",fontWeight:700}}>Price err</div>
+          )}
+          <button onClick={()=>fetchLivePrices(holdings)} title="Update live prices" style={{
+            padding:"6px 8px",borderRadius:8,cursor:"pointer",flexShrink:0,
+            border:`1px solid ${C.gold}44`,background:C.gold+"12",color:C.gold,
+            fontSize:10,fontWeight:700,whiteSpace:"nowrap"
+          }}>
+            $ Live
+          </button>
           <button onClick={doRefresh} title="Refresh all tabs" style={{
             position:"relative",display:"flex",alignItems:"center",gap:5,
             padding:"6px 10px",borderRadius:8,cursor:"pointer",
