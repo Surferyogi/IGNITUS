@@ -494,14 +494,15 @@ function App(){
         method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({action:"senate_trades"}),
       });
+      const text=await res.text();
+      alert("Senate raw response (status "+res.status+"): "+text.slice(0,300));
       if(!res.ok) throw new Error("HTTP "+res.status);
-      const d=await res.json();
+      const d=JSON.parse(text);
       if(d.trades&&d.trades.length>0){
         setSenateData(d.trades.slice(0,10));
-        console.log("Senate trades loaded:",d.trades.length);
       }
     }catch(e){
-      console.warn("Senate fetch failed:",e.message);
+      alert("Senate error: "+e.message);
     }
     setSenateLoading(false);
   }
