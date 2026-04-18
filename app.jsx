@@ -497,12 +497,35 @@ function App(){
     setSenateLoading(false);
   }
 
+  async function fetchSenatePrices(trades){
+    // Fetch live prices for senate tickers NOT in portfolio
+    const portTickers=new Set(holdings.map(h=>h.ticker));
+    const missing=[...new Set((trades||[]).map(t=>t.ticker))].filter(tk=>tk&&tk.length<=6&&!portTickers.has(tk));
+    if(missing.length===0) return;
+    try{
+      const res=await fetch('https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'prices',tickers:missing}),
+      });
+      if(!res.ok) return;
+      const d=await res.json();
+      const map={};
+      (d.prices||[]).forEach(p=>{
+        if(p.ticker&&p.price>0) map[p.ticker]={price:p.price,intrinsic:+(p.price*1.2).toFixed(2)};
+      });
+      if(Object.keys(map).length>0) setSenatePrices(prev=>({...prev,...map}));
+      console.log('Senate ext prices:',Object.keys(map).join(', '));
+    }catch(e){console.warn('Senate prices err:',e.message);}
+  }
+
+
   // ── Real historical price data  // ── Real historical price data  // ── Real historical price data  // ── Real historical price data — Finnhub via Edge Function ──────────────────
   const [realHist,setRealHist]=useState({});
   const [perfChartData,setPerfChartData]=useState({});
   const [senateData,setSenateData]=useState([]); // live senate trades
   const [senateLoading,setSenateLoading]=useState(false);
   const [senateUpdating,setSenateUpdating]=useState(false);
+  const [senatePrices,setSenatePrices]=useState({}); // {TICKER: {price, intrinsic}}
 
   // Hardcoded top senate traders — most active senators 2023-2026
   // Sources: MarketBeat, Benzinga, Quiver Quant, Newsweek, CNN (public STOCK Act disclosures)
@@ -553,6 +576,7 @@ function App(){
       }
       // 4. Update UI
       setSenateData(trades);
+      fetchSenatePrices(trades);
       const src2=trades[0]?.source?.includes('Quiver')?'Quiver API':'hardcoded data';
       alert('✅ Senate updated! '+ok+'/'+trades.length+' trades from '+src2+'.');
     }catch(e){
@@ -1181,8 +1205,9 @@ function App(){
             {!senateLoading&&senateData.length===0&&<div style={{textAlign:"center",padding:20,color:C.muted,fontSize:11}}>No senate trades in database.<br/>Add entries via the Supabase dashboard.</div>}
             {!senateLoading&&senateData.filter((s,i,arr)=>arr.findIndex(x=>x.ticker===s.ticker&&x.name===s.name&&x.action===s.action&&x.date===s.date)===i).map((s,i,arr)=>{
               const inPort=holdings.find(h=>h.ticker===s.ticker);
-              const livePrice=inPort?inPort.price:s.priceNow||0;
-              const intrinsic=inPort?inPort.intrinsic:0;
+              const extPrice=senatePrices[s.ticker];
+              const livePrice=inPort?inPort.price:(extPrice?.price||s.priceNow||0);
+              const intrinsic=inPort?inPort.intrinsic:(extPrice?.intrinsic||0);
               const avgCost=inPort?inPort.avgCost:0;
               const mkt=inPort?inPort.mkt:"US";
               const gainPct=avgCost>0?((livePrice-avgCost)/avgCost*100):null;
