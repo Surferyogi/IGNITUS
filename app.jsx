@@ -489,24 +489,15 @@ function App(){
   // ── Live Senate trades — fetched on app open ──────────────────────────────
   async function fetchSenateTrades(){
     setSenateLoading(true);
-    try{
-      const res=await fetch("https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api",{
-        method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({action:"senate_trades"}),
-      });
-      if(!res.ok) throw new Error("HTTP "+res.status);
-      const d=await res.json();
-      if(d.trades&&d.trades.length>0){
-        setSenateData(d.trades);
-        console.log("Senate trades loaded:",d.trades.length);
-      }
-    }catch(e){
-      console.warn("Senate fetch failed:",e.message);
+    await new Promise(r=>setTimeout(r,300));
+    // Use data already loaded from Supabase into SENATE array on startup
+    if(SENATE.length>0){
+      setSenateData([...SENATE]);
     }
     setSenateLoading(false);
   }
 
-  // ── Real historical price data  // ── Real historical price data  // ── Real historical price data — Finnhub via Edge Function ──────────────────
+  // ── Real historical price data  // ── Real historical price data  // ── Real historical price data  // ── Real historical price data — Finnhub via Edge Function ──────────────────
   const [realHist,setRealHist]=useState({});
   const [perfChartData,setPerfChartData]=useState({});
   const [senateData,setSenateData]=useState([]); // live senate trades
@@ -1123,10 +1114,10 @@ function App(){
 
 
             <div style={{fontSize:10,color:C.muted,marginBottom:12,padding:"6px 10px",background:C.surface,borderRadius:6}}>
-              US Senate STOCK Act disclosures. Senators must report within 30–45 days of trade. Data sourced from official Senate EFD filings.
+              US Senate STOCK Act disclosures. Senators must report within 30–45 days of trade. Update via Supabase dashboard.
             </div>
             {senateLoading&&<div style={{textAlign:"center",padding:16,color:C.gold,fontSize:11}}>↻ Loading live senate trades...</div>}
-            {!senateLoading&&senateData.length===0&&<div style={{textAlign:"center",padding:20,color:C.muted,fontSize:11}}>No senate trade data available.<br/>Data will appear here when senators file disclosures.</div>}
+            {!senateLoading&&senateData.length===0&&<div style={{textAlign:"center",padding:20,color:C.muted,fontSize:11}}>No senate trades in database.<br/>Add entries via the Supabase dashboard.</div>}
             {!senateLoading&&senateData.map((s,i)=>{
               const inPort=holdings.find(h=>h.ticker===s.ticker);
               const sinceGain=s.estPrice>0?((s.priceNow-s.estPrice)/s.estPrice*100):null;
