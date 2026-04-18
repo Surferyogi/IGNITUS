@@ -312,16 +312,10 @@ function App(){
     if (!currentHoldings || currentHoldings.length === 0) return;
     setPriceStatus('fetching');
 
-    // Alpha Vantage free tier: 25 calls/day
-    // Prioritise top 25 holdings by SGD value
-    const sorted = [...currentHoldings].sort((a,b) => {
-      const FX={US:1.36,SG:1.0,CN:0.17,JP:0.0087,EU:1.60};
-      const va=(a.price*a.shares)*(FX[a.mkt]||1.36);
-      const vb=(b.price*b.shares)*(FX[b.mkt]||1.36);
-      return vb-va;
-    });
-    const tickers = sorted.slice(0,25).map(h => h.ticker);
-    console.log('Fetching top 25 by value:', tickers.join(','));
+    // Finnhub free: 60 req/min — fetch all holdings concurrently
+    const sorted = [...currentHoldings];
+    const tickers = sorted.map(h => h.ticker);
+    console.log('Fetching all', tickers.length, 'tickers via Finnhub');
     const EDGE_URL = 'https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api';
 
     try {
@@ -330,12 +324,12 @@ function App(){
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ tickers, holdings: sorted.slice(0,25).map(h=>({ticker:h.ticker,mkt:h.mkt})) }),
+        body: JSON.stringify({ tickers, holdings: sorted.map(h=>({ticker:h.ticker,mkt:h.mkt})) }),
       });
 
       if (!res.ok) {
         const err = await res.text();
-        alert('Edge fn error ' + res.status + ': ' + err.slice(0,200));
+        console.error('Edge fn error:', res.status, err);
         setPriceStatus('error');
         return;
       }
@@ -343,7 +337,7 @@ function App(){
       const data = await res.json();
       const results = data.prices || {};
       const n = Object.keys(results).length;
-      alert('Edge fn OK: ' + n + ' prices. Sample: ' + Object.entries(results).slice(0,3).map(([k,v])=>k+'='+v).join(', '));
+      console.log('Edge fn OK:', n, 'prices');
 
       if (n === 0) { setPriceStatus('error'); return; }
 
@@ -362,7 +356,7 @@ function App(){
       setRefreshKey(k => k + 1);
 
     } catch(e) {
-      alert('fetchLivePrices catch: ' + e.message);
+      console.error('fetchLivePrices failed:', e.message);
       setPriceStatus('error');
     }
   }
