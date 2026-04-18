@@ -228,13 +228,13 @@ function DonutChart({data,size=96}){
   );
 }
 
-function MktSelector({mktFilter,setMktFilter}){
-  const mkts=["ALL",...[...new Set(ALL_H.map(h=>h.mkt))]];
+function MktSelector({mktFilter,setMktFilter,holdings}){
+  const mkts=["ALL",...[...new Set(holdings.map(h=>h.mkt))]];
   const IDX={"US":"S&P 500","SG":"STI","CN":"HSI","JP":"Nikkei","EU":"CAC 40","GB":"FTSE","AU":"ASX"};
   return(
     <div style={{display:"flex",gap:5,overflowX:"auto",paddingBottom:4}}>
       {mkts.map(m=>{
-        const cnt=m==="ALL"?ALL_H.length:ALL_H.filter(h=>h.mkt===m).length;
+        const cnt=m==="ALL"?holdings.length:holdings.filter(h=>h.mkt===m).length;
         const active=mktFilter===m;
         return(
           <button key={m} onClick={()=>setMktFilter(m)} style={{flexShrink:0,padding:"7px 11px",borderRadius:10,cursor:"pointer",background:active?C.accent:C.card,color:active?"#000":C.text,border:`1px solid ${active?C.accent:C.border}`,textAlign:"center",minWidth:64}}>
@@ -279,23 +279,26 @@ function App(){
   const [isLoading,setIsLoading]=useState(true);
 
   // ── Load data from Supabase on mount ─────────────────────────────────────────
+  const [loadMsg,setLoadMsg]=useState('Connecting...');
   useEffect(()=>{
-    if(!window.portfolioDB)return;
-    setIsLoading(true);
+    if(!window.portfolioDB){setLoadMsg('ERROR: portfolioDB not found');setIsLoading(false);return;}
+    setLoadMsg('Calling portfolioDB.load()...');
     window.portfolioDB.load().then(data=>{
+      setLoadMsg('Got data: '+JSON.stringify({h:(data.holdings||[]).length,t:(data.trades||[]).length}));
       if(data.holdings&&data.holdings.length>0){
         setHoldings(data.holdings);
         setTrades(data.trades||[]);
-        // Rebuild FIRST_BUY from trades
         const fb={};
         (data.trades||[]).filter(t=>t.type==='BUY').forEach(t=>{
           if(!fb[t.ticker]||t.date<fb[t.ticker])fb[t.ticker]=t.date;
         });
         FIRST_BUY=fb;
+      } else {
+        setLoadMsg('WARNING: holdings empty. data='+JSON.stringify(data).slice(0,200));
       }
       setIsLoading(false);
     }).catch(e=>{
-      console.error('Failed to load from DB:',e);
+      setLoadMsg('ERROR: '+e.message);
       setIsLoading(false);
     });
   },[]);
@@ -623,7 +626,7 @@ function App(){
       <>
         <div style={{marginBottom:12}}>
           <div style={cardT}>Select Market</div>
-          <MktSelector mktFilter={mktFilter} setMktFilter={setMktFilter}/>
+          <MktSelector mktFilter={mktFilter} setMktFilter={setMktFilter} holdings={holdings}/>
         </div>
         <div style={card}>
           <div style={{...row,marginBottom:10}}>
@@ -805,7 +808,7 @@ function App(){
               Prices sourced from Unusual Whales &amp; Quiver Quantitative. Est. trade price based on date-of-filing midpoint. STOCK Act requires disclosure within 30-45 days.
             </div>
             {SENATE.map((s,i)=>{
-              const inPort=ALL_H.find(h=>h.ticker===s.ticker);
+              const inPort=holdings.find(h=>h.ticker===s.ticker);
               const sinceGain=s.estPrice>0?((s.priceNow-s.estPrice)/s.estPrice*100):null;
               const isProfit=s.action==="BUY"?sinceGain>=0:sinceGain<=0;
               return(
@@ -1552,9 +1555,9 @@ function App(){
   return(
     <div style={{fontFamily:"'DM Sans',system-ui,sans-serif",background:C.bg,minHeight:"100vh",color:C.text,maxWidth:430,margin:"0 auto",position:"relative"}}>
       {isLoading&&(
-        <div style={{position:"fixed",inset:0,background:"#0A0D14",zIndex:999,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}>
+        <div style={{position:"fixed",inset:0,background:"#0A0D14",zIndex:999,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16,padding:20}}>
           <div style={{fontSize:28,fontWeight:800,color:"#00D4FF",letterSpacing:"-1px"}}>IGNITUS</div>
-          <div style={{fontSize:12,color:"#6B7A99"}}>Loading portfolio...</div>
+          <div style={{fontSize:12,color:"#6B7A99",textAlign:"center",maxWidth:320,wordBreak:"break-all"}}>{loadMsg}</div>
           <div style={{width:120,height:2,background:"#1E2A3E",borderRadius:1,overflow:"hidden"}}>
             <div style={{width:"55%",height:"100%",background:"#00D4FF",borderRadius:1,animation:"pulse 1s ease-in-out infinite"}}/>
           </div>
