@@ -523,29 +523,38 @@ function App(){
     setSenateUpdating(true);
     const SB='https://ckyshjxznltdkxfvhfdy.supabase.co';
     const KEY='sb_publishable_y-wyxLIPM0eiQOezFH6UYQ_WEJzxLGz';
-    const headers={'Content-Type':'application/json','apikey':KEY,'Authorization':'Bearer '+KEY};
+    const sbHeaders={'Content-Type':'application/json','apikey':KEY,'Authorization':'Bearer '+KEY};
     try{
-      // Delete existing senate records
-      await fetch(SB+'/rest/v1/senate',{method:'DELETE',headers:{...headers,'Prefer':'return=minimal'}});
-      // Insert fresh records one by one
+      // 1. Try Quiver Quantitative via Edge Function for live data
+      let trades=[];
+      try{
+        const res=await fetch('https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'senate_trades'}),
+        });
+        if(res.ok){
+          const d=await res.json();
+          if(d.trades&&d.trades.length>0){trades=d.trades;console.log('Senate from Quiver:',trades.length);}
+        }
+      }catch(e){console.warn('Quiver failed:',e.message);}
+      // 2. Fall back to hardcoded master if Quiver failed
+      if(trades.length===0){trades=[...SENATE_MASTER];console.log('Using hardcoded master');}
+      // 3. Save to Supabase
+      await fetch(SB+'/rest/v1/senate',{method:'DELETE',headers:{...sbHeaders,'Prefer':'return=minimal'}});
       let ok=0;
-      for(const trade of SENATE_MASTER){
+      for(const trade of trades){
         const res=await fetch(SB+'/rest/v1/senate',{
-          method:'POST',
-          headers:{...headers,'Prefer':'return=minimal'},
-          body:JSON.stringify({
-            name:trade.name, party:trade.party, ticker:trade.ticker,
-            action:trade.action, amount:trade.amount, date:trade.date,
-            sector:trade.sector, est_price:trade.est_price,
-            price_now:trade.price_now, source:trade.source,
-          }),
+          method:'POST',headers:{...sbHeaders,'Prefer':'return=minimal'},
+          body:JSON.stringify({name:trade.name,party:trade.party,ticker:trade.ticker,
+            action:trade.action,amount:trade.amount,date:trade.date,sector:trade.sector,
+            est_price:trade.est_price||0,price_now:trade.price_now||0,source:trade.source}),
         });
         if(res.ok||res.status===201)ok++;
       }
-      // Reload into UI
-      setSenateData([...SENATE_MASTER]);
-      console.log('Senate updated:',ok,'records');
-      alert('✅ Senate data updated! '+ok+'/'+SENATE_MASTER.length+' trades loaded.');
+      // 4. Update UI
+      setSenateData(trades);
+      const src2=trades[0]?.source?.includes('Quiver')?'Quiver API':'hardcoded data';
+      alert('✅ Senate updated! '+ok+'/'+trades.length+' trades from '+src2+'.');
     }catch(e){
       console.error('Senate update failed:',e);
       alert('❌ Update failed: '+e.message);
