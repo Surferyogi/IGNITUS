@@ -307,42 +307,68 @@ function App(){
     });
   },[]);
 
-  // ── Live price updater — uses Claude AI (same API as analyse()) ───────────────
+  // ── Live price updater — Stooq.com (free, no key, CORS enabled) ─────────────
   async function fetchLivePrices(currentHoldings) {
     if (!currentHoldings || currentHoldings.length === 0) return;
     setPriceStatus('fetching');
     const results = {};
-    const tickers = currentHoldings.map(h=>h.ticker);
 
-    // Split into batches of 25
-    const BATCH = 25;
-    for (let i = 0; i < tickers.length; i += BATCH) {
-      const batch = tickers.slice(i, i + BATCH);
-      const prompt = "You are a stock price data service. Return ONLY a JSON object with no markdown, no explanation, no code fences. Keys are ticker symbols, values are the latest closing prices as numbers. Use the most recent closing price you have for each ticker. Tickers: " + batch.join(",") + ". Example format: {"AAPL":270.23,"MSFT":411.50}";
+    // Convert ticker to Stooq format
+    function toStooq(ticker, mkt) {
+      const t = ticker.toLowerCase();
+      if (mkt === 'US')  return t + '.us';
+      if (mkt === 'SG')  return t.replace('.si','') + '.si';
+      if (mkt === 'CN')  return t.replace('.hk','') + '.hk';
+      if (mkt === 'JP')  return t.replace('.t','')  + '.jp';
+      if (mkt === 'EU')  return t + '.us'; // OTC listed in US
+      return t + '.us';
+    }
+
+    // Fetch single ticker from Stooq
+    async function fetchOne(h) {
+      const sym = toStooq(h.ticker, h.mkt);
+      const url = 'https://stooq.com/q/l/?s=' + sym + '&f=sd2t2ohlcv&h&e=json';
       try {
-        const res = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:800,messages:[{role:"user",content:prompt}]})});
+        const res = await fetch(url);
+        if (!res.ok) return;
         const d = await res.json();
-        const text = d.content?.map(c=>c.text||"").join("").trim();
-        // Strip any markdown fences just in case
-        const clean = text.replace(/```[a-z]*\n?/g,"").replace(/```/g,"").trim();
-        const prices = JSON.parse(clean);
-        Object.entries(prices).forEach(([k,v])=>{ if(v&&v>0) results[k]=parseFloat((+v).toFixed(4)); });
-      } catch(e) { console.warn("Price batch error:",e.message); }
-      if (i + BATCH < tickers.length) await new Promise(r=>setTimeout(r,200));
+        const q = d?.symbols?.[0];
+        const p = q?.close || q?.last;
+        if (p && p > 0 && p !== 'N/D') {
+          results[h.ticker] = parseFloat((+p).toFixed(4));
+        }
+      } catch(e) {
+        // silently skip failed tickers
+      }
+    }
+
+    // Fetch in parallel groups of 10 to avoid rate limiting
+    const GROUP = 10;
+    for (let i = 0; i < currentHoldings.length; i += GROUP) {
+      const group = currentHoldings.slice(i, i + GROUP);
+      await Promise.all(group.map(fetchOne));
+      if (i + GROUP < currentHoldings.length) await new Promise(r => setTimeout(r, 500));
     }
 
     const n = Object.keys(results).length;
-    console.log("Prices fetched:",n+"/"+tickers.length, Object.entries(results).slice(0,3).map(([k,v])=>k+"="+v).join(", "));
+    console.log('Stooq prices:', n + '/' + currentHoldings.length,
+      Object.entries(results).slice(0,5).map(([k,v])=>k+'='+v).join(', '));
+
     if (n === 0) { setPriceStatus('error'); return; }
 
-    setHoldings(prev=>{
-      const updated = prev.map(h=>{ const p=results[h.ticker]; return p&&p>0?{...h,price:p}:h; });
-      if (window.portfolioDB) window.portfolioDB.updateHoldings(updated).catch(e=>console.warn("DB:",e));
+    setHoldings(prev => {
+      const updated = prev.map(h => {
+        const p = results[h.ticker];
+        return p && p > 0 ? { ...h, price: p } : h;
+      });
+      if (window.portfolioDB) {
+        window.portfolioDB.updateHoldings(updated).catch(e => console.warn('DB:', e));
+      }
       return updated;
     });
     setPriceUpdated(new Date());
     setPriceStatus('done');
-    setRefreshKey(k=>k+1);
+    setRefreshKey(k => k + 1);
   }
 
   // Auto-persist holdings to SQLite whenever they change (debounced 600ms)
