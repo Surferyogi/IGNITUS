@@ -401,6 +401,7 @@ function App(){
         // Fetch live prices and FX rates after data loads
         fetchLivePrices(data.holdings);
         fetchLiveFx();
+        fetchSenateTrades();
       } else {
         setLoadMsg('WARNING: holdings empty. data='+JSON.stringify(data).slice(0,200));
       }
@@ -529,6 +530,26 @@ function App(){
     }
   }
 
+  // ── Live Senate trades — fetched on app open ──────────────────────────────
+  async function fetchSenateTrades(){
+    setSenateLoading(true);
+    try{
+      const res=await fetch("https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({action:"senate_trades"}),
+      });
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      const d=await res.json();
+      if(d.trades&&d.trades.length>0){
+        setSenateData(d.trades.slice(0,10));
+        console.log("Senate trades loaded:",d.trades.length);
+      }
+    }catch(e){
+      console.warn("Senate fetch failed:",e.message);
+    }
+    setSenateLoading(false);
+  }
+
   // ── Real historical price data — Finnhub via Edge Function ──────────────────
   const [realHist,setRealHist]=useState({});
   const [showSenateForm,setShowSenateForm]=useState(false);
@@ -538,7 +559,9 @@ function App(){
     estPrice:'',priceNow:'',source:'Unusual Whales'
   });
   const [senateList,setSenateList]=useState(SENATE);
-  const [perfChartData,setPerfChartData]=useState({}); // {period: {portfolio:[],index:[]}}
+  const [perfChartData,setPerfChartData]=useState({});
+  const [senateData,setSenateData]=useState([]); // live senate trades
+  const [senateLoading,setSenateLoading]=useState(false); // {period: {portfolio:[],index:[]}}
   const [perfChartLoading,setPerfChartLoading]=useState({});
 
   // Index ETF tickers for each market (used in PerfChart)
@@ -1138,7 +1161,11 @@ function App(){
         {insightTab==="senate"&&(
           <div style={card}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-              <div style={cardT}>US Senate Trades</div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div style={cardT}>US Senate Trades</div>
+                {!senateLoading&&senateData.length>0&&<span style={{fontSize:9,color:C.green,fontWeight:700}}>● live</span>}
+                {senateLoading&&<span style={{fontSize:9,color:C.gold}}>↻ fetching...</span>}
+              </div>
               <button onClick={()=>setShowSenateForm(v=>!v)} style={{
                 fontSize:11,padding:"5px 12px",borderRadius:7,cursor:"pointer",fontWeight:700,
                 background:showSenateForm?C.surface:C.accent+"18",
@@ -1228,12 +1255,13 @@ function App(){
             <div style={{fontSize:10,color:C.muted,marginBottom:12,padding:"6px 10px",background:C.surface,borderRadius:6}}>
               Prices from Unusual Whales &amp; Quiver Quantitative. STOCK Act requires disclosure within 30-45 days.
             </div>
-            {senateList.map((s,i)=>{
+            {senateLoading&&<div style={{textAlign:"center",padding:16,color:C.gold,fontSize:11}}>↻ Loading live senate trades...</div>}
+            {(!senateLoading?senateData.length>0?senateData:senateList:senateList).map((s,i)=>{
               const inPort=holdings.find(h=>h.ticker===s.ticker);
               const sinceGain=s.estPrice>0?((s.priceNow-s.estPrice)/s.estPrice*100):null;
               const isProfit=s.action==="BUY"?sinceGain>=0:sinceGain<=0;
               return(
-                <div key={i} style={{marginBottom:14,paddingBottom:14,borderBottom:i<senateList.length-1?`1px solid ${C.border}`:"none"}}>
+                <div key={i} style={{marginBottom:14,paddingBottom:14,borderBottom:i<(senateData.length>0?senateData:senateList).length-1?`1px solid ${C.border}`:"none"}}>
                   <div style={{...row,marginBottom:6}}>
                     <div>
                       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
@@ -1251,7 +1279,8 @@ function App(){
                       <div style={{fontSize:10,color:C.gold,fontWeight:600}}>{s.amount}</div>
                     </div>
                   </div>
-                  {/* Price strip */}
+                  {/* Price strip - show if we have est price data */}
+                  {s.estPrice>0&&(
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,background:C.surface,borderRadius:7,padding:"7px 10px",marginBottom:inPort?6:0}}>
                     <div>
                       <div style={{fontSize:8,color:C.muted}}>Est. Trade Price</div>
@@ -1261,7 +1290,7 @@ function App(){
                     <div style={{textAlign:"center"}}>
                       <div style={{fontSize:8,color:C.muted}}>Current Price</div>
                       <div style={{fontSize:12,fontWeight:700}}>${fmt(s.priceNow)}</div>
-                      <div style={{fontSize:8,color:C.muted}}>as of Apr 2026</div>
+                      <div style={{fontSize:8,color:C.muted}}>as of today</div>
                     </div>
                     <div style={{textAlign:"right"}}>
                       <div style={{fontSize:8,color:C.muted}}>Since Trade</div>
@@ -1271,6 +1300,7 @@ function App(){
                       <div style={{fontSize:8,color:isProfit?C.green:C.red}}>{isProfit?"Profitable":"Losing"}</div>
                     </div>
                   </div>
+                  )}
                   {inPort&&(
                     <div style={{background:C.accent+"0D",borderRadius:6,padding:"6px 8px",fontSize:10}}>
                       <div style={{display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",marginBottom:4}}>
