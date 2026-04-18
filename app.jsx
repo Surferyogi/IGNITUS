@@ -312,7 +312,16 @@ function App(){
     if (!currentHoldings || currentHoldings.length === 0) return;
     setPriceStatus('fetching');
 
-    const tickers = currentHoldings.map(h => h.ticker);
+    // Alpha Vantage free tier: 25 calls/day
+    // Prioritise top 25 holdings by SGD value
+    const sorted = [...currentHoldings].sort((a,b) => {
+      const FX={US:1.36,SG:1.0,CN:0.17,JP:0.0087,EU:1.60};
+      const va=(a.price*a.shares)*(FX[a.mkt]||1.36);
+      const vb=(b.price*b.shares)*(FX[b.mkt]||1.36);
+      return vb-va;
+    });
+    const tickers = sorted.slice(0,25).map(h => h.ticker);
+    console.log('Fetching top 25 by value:', tickers.join(','));
     const EDGE_URL = 'https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api';
 
     try {
@@ -327,7 +336,7 @@ function App(){
 
       if (!res.ok) {
         const err = await res.text();
-        console.error('Edge function error:', res.status, err);
+        alert('Edge fn error ' + res.status + ': ' + err.slice(0,200));
         setPriceStatus('error');
         return;
       }
@@ -335,8 +344,7 @@ function App(){
       const data = await res.json();
       const results = data.prices || {};
       const n = Object.keys(results).length;
-      console.log('Prices from edge fn:', n + '/' + tickers.length,
-        Object.entries(results).slice(0,5).map(([k,v])=>k+'='+v).join(', '));
+      alert('Edge fn OK: ' + n + ' prices. Sample: ' + Object.entries(results).slice(0,3).map(([k,v])=>k+'='+v).join(', '));
 
       if (n === 0) { setPriceStatus('error'); return; }
 
@@ -355,7 +363,7 @@ function App(){
       setRefreshKey(k => k + 1);
 
     } catch(e) {
-      console.error('fetchLivePrices failed:', e.message);
+      alert('fetchLivePrices catch: ' + e.message);
       setPriceStatus('error');
     }
   }
