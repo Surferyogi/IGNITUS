@@ -373,7 +373,9 @@ function App(){
   // ── DB persistence ────────────────────────────────────────────────────────────
   const [dbStatus,setDbStatus]=useState('ready'); // 'ready' | 'saving' | 'saved' | 'error'
   const [isLoading,setIsLoading]=useState(true);
-  const [priceStatus,setPriceStatus]=useState('idle'); // 'idle'|'fetching'|'done'|'error'
+  const [priceStatus,setPriceStatus]=useState('idle');
+  const [fxRates,setFxRates]=useState({USD:1.36,JPY:0.0087,EUR:1.60,HKD:0.17,GBP:1.69,AUD:0.87,CNY:0.19,TWD:0.042,SGD:1.0});
+  const [fxUpdated,setFxUpdated]=useState(null); // 'idle'|'fetching'|'done'|'error'
   const [priceUpdated,setPriceUpdated]=useState(null); // timestamp of last price update
 
   // ── Load data from Supabase on mount ─────────────────────────────────────────
@@ -391,8 +393,9 @@ function App(){
           if(!fb[t.ticker]||t.date<fb[t.ticker])fb[t.ticker]=t.date;
         });
         FIRST_BUY=fb;
-        // Fetch live prices after data loads
+        // Fetch live prices and FX rates after data loads
         fetchLivePrices(data.holdings);
+        fetchLiveFx();
       } else {
         setLoadMsg('WARNING: holdings empty. data='+JSON.stringify(data).slice(0,200));
       }
@@ -457,6 +460,26 @@ function App(){
     }
   }
 
+  // ── Live FX rates — fetched on app open ─────────────────────────────────────
+  async function fetchLiveFx(){
+    try{
+      const res=await fetch("https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({action:"fx_rates"}),
+      });
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      const d=await res.json();
+      if(d.rates&&Object.keys(d.rates).length>0){
+        setFxRates(d.rates);
+        setFxUpdated(new Date());
+        setRefreshKey(k=>k+1); // force recompute with new rates
+        console.log("FX rates updated:",Object.entries(d.rates).map(([k,v])=>k+"="+v).join(", "));
+      }
+    }catch(e){
+      console.warn("FX fetch failed:",e.message);
+    }
+  }
+
   // ── Real historical price data — Finnhub via Edge Function ──────────────────
   const [realHist,setRealHist]=useState({});
   const [perfChartData,setPerfChartData]=useState({}); // {period: {portfolio:[],index:[]}}
@@ -481,7 +504,7 @@ function App(){
     const idxTicker=INDEX_ETFS[mktFilter]||"SPY";
 
     // Top holdings by value (max 8 to stay within edge fn timeout)
-    const top=[...subset].sort((a,b)=>toSGD(b.price*b.shares,b.mkt)-toSGD(a.price*a.shares,a.mkt)).slice(0,8);
+    const top=[...subset].sort((a,b)=>toSGDlive(b.price*b.shares,b.mkt)-toSGDlive(a.price*a.shares,a.mkt)).slice(0,8);
     const holdingTickers=top.map(h=>h.ticker);
 
     try{
@@ -502,9 +525,9 @@ function App(){
       const portfolioSeries=Array.from({length:n},(_,i)=>{
         return top.reduce((s,h)=>{
           const hc=holdingHistories[h.ticker];
-          if(!hc||hc.length<2) return s+toSGD(h.price*h.shares,h.mkt);
+          if(!hc||hc.length<2) return s+toSGDlive(h.price*h.shares,h.mkt);
           const idx=Math.round((i/(n-1||1))*(hc.length-1));
-          return s+toSGD((hc[Math.min(idx,hc.length-1)]||h.price)*h.shares,h.mkt);
+          return s+toSGDlive((hc[Math.min(idx,hc.length-1)]||h.price)*h.shares,h.mkt);
         },0);
       });
 
@@ -590,9 +613,35 @@ function App(){
   }
 
   // Currencies separate from exchange/market
-  const CCY={USD:{symbol:"$",r:1.36},SGD:{symbol:"S$",r:1.0},HKD:{symbol:"HK$",r:0.17},JPY:{symbol:"¥",r:0.0087},EUR:{symbol:"€",r:1.60},GBP:{symbol:"£",r:1.69},AUD:{symbol:"A$",r:0.87},CNY:{symbol:"¥",r:0.19},TWD:{symbol:"NT$",r:0.042}};
+  // CCY uses live FX rates — updates automatically when fxRates changes
+  const CCY=useMemo(()=>({
+    USD:{symbol:"$",  r:fxRates.USD||1.36},
+    SGD:{symbol:"S$", r:1.0},
+    HKD:{symbol:"HK$",r:fxRates.HKD||0.17},
+    JPY:{symbol:"¥",  r:fxRates.JPY||0.0087},
+    EUR:{symbol:"€",  r:fxRates.EUR||1.60},
+    GBP:{symbol:"£",  r:fxRates.GBP||1.69},
+    AUD:{symbol:"A$", r:fxRates.AUD||0.87},
+    CNY:{symbol:"¥",  r:fxRates.CNY||0.19},
+    TWD:{symbol:"NT$",r:fxRates.TWD||0.042},
+  }),[fxRates]);
   const ccySymbol=ccy=>(CCY[ccy]?.symbol||"$");
   const ccyToSGD=(v,ccy)=>v*(CCY[ccy]?.r??1.36);
+
+  // Live MKT rates — overrides hardcoded values with real FX rates
+  const liveMKT=useMemo(()=>({
+    ...MKT,
+    US:{...MKT.US, r:fxRates.USD||MKT.US.r},
+    JP:{...MKT.JP, r:fxRates.JPY||MKT.JP.r},
+    EU:{...MKT.EU, r:fxRates.EUR||MKT.EU.r},
+    CN:{...MKT.CN, r:fxRates.HKD||MKT.CN.r},
+    GB:{...MKT.GB, r:fxRates.GBP||MKT.GB.r},
+    AU:{...MKT.AU, r:fxRates.AUD||MKT.AU.r},
+    SG:{...MKT.SG, r:1.0},
+  }),[fxRates]);
+
+  // toSGD using live rates
+  const toSGDlive=(v,mkt)=>v*(liveMKT[mkt]?.r??fxRates.USD??1.36);
 
   // Ticker → Name lookup from existing holdings
   const tickerNames=useMemo(()=>{
@@ -606,28 +655,28 @@ function App(){
   const [tickerSearchTerm,setTickerSearchTerm]=useState("");
 
   // Portfolio maths — all depend on holdings/trades/refreshKey so they recompute on refresh
-  const totalValSGD=useMemo(()=>holdings.reduce((s,h)=>s+toSGD(h.price*h.shares,h.mkt),0),[holdings,refreshKey]);
-  const totalCostSGD=useMemo(()=>holdings.reduce((s,h)=>s+toSGD(h.avgCost*h.shares,h.mkt),0),[holdings,refreshKey]);
+  const totalValSGD=useMemo(()=>holdings.reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0),[holdings,refreshKey]);
+  const totalCostSGD=useMemo(()=>holdings.reduce((s,h)=>s+toSGDlive(h.avgCost*h.shares,h.mkt),0),[holdings,refreshKey]);
   const unrealSGD=totalValSGD-totalCostSGD;
   const unrealPct=totalCostSGD?(unrealSGD/totalCostSGD)*100:0;
-  const totalDivSGD=useMemo(()=>holdings.reduce((s,h)=>s+toSGD((h.divYield/100)*h.price*h.shares,h.mkt),0),[holdings,refreshKey]);
+  const totalDivSGD=useMemo(()=>holdings.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares,h.mkt),0),[holdings,refreshKey]);
   const totalShares=useMemo(()=>holdings.reduce((s,h)=>s+h.shares,0),[holdings,refreshKey]);
   const avgCostSGD=totalShares?totalCostSGD/totalShares:0;
-  const realizedSGD=useMemo(()=>trades.filter(t=>t.type==="SELL").reduce((s,t)=>s+toSGD(t.profit||0,t.mkt),0),[trades,refreshKey]);
-  const wt=h=>filteredTotalSGD?(toSGD(h.price*h.shares,h.mkt)/filteredTotalSGD)*100:0;
-  const wtTotal=h=>totalValSGD?(toSGD(h.price*h.shares,h.mkt)/totalValSGD)*100:0;
+  const realizedSGD=useMemo(()=>trades.filter(t=>t.type==="SELL").reduce((s,t)=>s+toSGDlive(t.profit||0,t.mkt),0),[trades,refreshKey]);
+  const wt=h=>filteredTotalSGD?(toSGDlive(h.price*h.shares,h.mkt)/filteredTotalSGD)*100:0;
+  const wtTotal=h=>totalValSGD?(toSGDlive(h.price*h.shares,h.mkt)/totalValSGD)*100:0;
 
   const sectorData=useMemo(()=>{
     const subset=mktFilter==="ALL"?holdings:holdings.filter(h=>h.mkt===mktFilter);
-    return SECTORS.map((sec,i)=>({label:sec,color:SCOL[i],value:subset.filter(h=>h.sector===sec).reduce((t,h)=>t+toSGD(h.price*h.shares,h.mkt),0)})).filter(d=>d.value>0);
+    return SECTORS.map((sec,i)=>({label:sec,color:SCOL[i],value:subset.filter(h=>h.sector===sec).reduce((t,h)=>t+toSGDlive(h.price*h.shares,h.mkt),0)})).filter(d=>d.value>0);
   },[mktFilter,holdings,refreshKey]);
   const countryData=useMemo(()=>{
     const subset=mktFilter==="ALL"?holdings:holdings.filter(h=>h.mkt===mktFilter);
-    return [...new Set(subset.map(h=>h.mkt))].map((m,i)=>({label:m,color:[C.accent,C.green,C.gold,C.purple,C.red,"#FF8C42","#62D2E8"][i%7],value:subset.filter(h=>h.mkt===m).reduce((s,h)=>s+toSGD(h.price*h.shares,h.mkt),0)}));
+    return [...new Set(subset.map(h=>h.mkt))].map((m,i)=>({label:m,color:[C.accent,C.green,C.gold,C.purple,C.red,"#FF8C42","#62D2E8"][i%7],value:subset.filter(h=>h.mkt===m).reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0)}));
   },[mktFilter,holdings,refreshKey]);
   const filteredTotalSGD=useMemo(()=>{
     const subset=mktFilter==="ALL"?holdings:holdings.filter(h=>h.mkt===mktFilter);
-    return subset.reduce((s,h)=>s+toSGD(h.price*h.shares,h.mkt),0);
+    return subset.reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0);
   },[mktFilter,holdings,refreshKey]);
 
   const filtered=useMemo(()=>{
@@ -651,7 +700,7 @@ function App(){
     const prompt=[
       "Buffett-style analysis for Singapore investor. 3-4 paragraphs.",
       "Stock: "+h.name+" ("+h.ticker+") Market: "+h.mkt+" "+m.code,
-      "Price: "+m.symbol+h.price+" approx S$"+fmt(toSGD(h.price,h.mkt))+" Avg Cost: "+m.symbol+h.avgCost,
+      "Price: "+m.symbol+h.price+" approx S$"+fmt(toSGDlive(h.price,h.mkt))+" Avg Cost: "+m.symbol+h.avgCost,
       "Intrinsic: "+m.symbol+h.intrinsic+" Upside: "+up+"%",
       "Moat: "+h.moat+" PE: "+h.peRatio+" Div: "+h.divYield+"%",
       "Buffett Score: "+bs.score+"/100 Action: "+bs.action,
@@ -899,7 +948,7 @@ function App(){
           const localVal=h.price*h.shares,localCost=h.avgCost*h.shares,localGain=localVal-localCost;
           const gainPct=((h.price-h.avgCost)/h.avgCost)*100;
           const upside=((h.intrinsic-h.price)/h.price)*100;
-          const sgdVal=toSGD(localVal,h.mkt),sgdGain=toSGD(localGain,h.mkt);
+          const sgdVal=toSGDlive(localVal,h.mkt),sgdGain=toSGDlive(localGain,h.mkt);
           const w=wt(h),pos=gainPct>=0,sc=scoreH(h),r=getRec(h);
           const sCol=SCOL[SECTORS.indexOf(h.sector)%SCOL.length];
           return(
@@ -914,7 +963,7 @@ function App(){
                   <div style={{fontSize:11,color:C.muted,marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:200}}>{h.name}</div>
                   <div style={{fontSize:10,color:C.mutedLight,marginTop:3}}>
                     Avg Cost: <b style={{color:C.text}}>{fmtL(h.avgCost,h.mkt)}</b>
-                    <span style={{color:C.muted,fontWeight:400}}> ({fmtS(toSGD(h.avgCost,h.mkt))})</span>
+                    <span style={{color:C.muted,fontWeight:400}}> ({fmtS(toSGDlive(h.avgCost,h.mkt))})</span>
                   </div>
                   <div style={{fontSize:10,color:C.mutedLight,marginTop:1}}>
                     Intrinsic: <b style={{color:upside>=0?C.green:C.red}}>{fmtL(h.intrinsic,h.mkt)}</b>
@@ -924,7 +973,7 @@ function App(){
                 <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,flexShrink:0,marginLeft:8}}>
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:14,fontWeight:800}}>{fmtL(h.price,h.mkt)}</div>
-                    <div style={{fontSize:9,color:C.muted}}>{fmtS(toSGD(h.price,h.mkt))}</div>
+                    <div style={{fontSize:9,color:C.muted}}>{fmtS(toSGDlive(h.price,h.mkt))}</div>
                     <div style={{fontSize:11,color:pos?C.green:C.red,fontWeight:700}}>{fmtPct(gainPct)}</div>
                     <div style={{fontSize:9,color:C.muted}}>{h.shares.toLocaleString()} sh</div>
                   </div>
@@ -1163,8 +1212,8 @@ function App(){
         {mktsInPort.map(mkt=>{
           const m=MKT[mkt]||MKT.US;
           const cnt=holdings.filter(h=>h.mkt===mkt).length;
-          const portCost=holdings.filter(h=>h.mkt===mkt).reduce((s,h)=>s+toSGD(h.avgCost*h.shares,h.mkt),0);
-          const portVal=holdings.filter(h=>h.mkt===mkt).reduce((s,h)=>s+toSGD(h.price*h.shares,h.mkt),0);
+          const portCost=holdings.filter(h=>h.mkt===mkt).reduce((s,h)=>s+toSGDlive(h.avgCost*h.shares,h.mkt),0);
+          const portVal=holdings.filter(h=>h.mkt===mkt).reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0);
           const portPct=portCost?(portVal-portCost)/portCost*100:0;
           const beat=portPct>m.idxYtd;
           return(
@@ -1203,11 +1252,11 @@ function App(){
           {[...new Set(holdings.map(h=>h.mkt))].map(mkt=>{
             const m=MKT[mkt]||MKT.US;
             const mktHoldings=holdings.filter(h=>h.mkt===mkt);
-            const mktTotal=mktHoldings.reduce((s,h)=>s+toSGD(h.price*h.shares,h.mkt),0);
+            const mktTotal=mktHoldings.reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0);
             if(mktTotal===0)return null;
             const sectorsInMkt=SECTORS.map((sec,i)=>{
               const secHoldings=mktHoldings.filter(h=>h.sector===sec);
-              const val=secHoldings.reduce((s,h)=>s+toSGD(h.price*h.shares,h.mkt),0);
+              const val=secHoldings.reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0);
               return{sec,val,col:SCOL[i],cnt:secHoldings.length};
             }).filter(d=>d.val>0).sort((a,b)=>b.val-a.val);
             return(
@@ -1243,7 +1292,7 @@ function App(){
   // ── Trades tab ───────────────────────────────────────────────────────────────
   function TradesView(){
     const shown=tradeType==="ALL"?trades:trades.filter(t=>t.type===tradeType);
-    const totalReal=trades.filter(t=>t.type==="SELL").reduce((s,t)=>s+toSGD(t.profit||0,t.mkt),0);
+    const totalReal=trades.filter(t=>t.type==="SELL").reduce((s,t)=>s+toSGDlive(t.profit||0,t.mkt),0);
     const mkts=Object.keys(MKT);
     const ccyList=Object.keys(CCY);
     const iField={width:"100%",background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:"7px 10px",color:C.text,fontSize:12,outline:"none",boxSizing:"border-box"};
@@ -1458,8 +1507,8 @@ function App(){
             const col=[C.accent,C.green,C.gold,C.purple,C.red,"#FF8C42","#62D2E8"][i%7];
             const mktHoldings=holdings.filter(h=>h.mkt===mktKey);
             const localVal=mktHoldings.reduce((s,h)=>s+h.price*h.shares,0);
-            const sgdVal=mktHoldings.reduce((s,h)=>s+toSGD(h.price*h.shares,h.mkt),0);
-            const sgdCost=mktHoldings.reduce((s,h)=>s+toSGD(h.avgCost*h.shares,h.mkt),0);
+            const sgdVal=mktHoldings.reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0);
+            const sgdCost=mktHoldings.reduce((s,h)=>s+toSGDlive(h.avgCost*h.shares,h.mkt),0);
             const pnl=sgdVal-sgdCost;
             const pnlPct=sgdCost?(pnl/sgdCost)*100:0;
             const pct=totalValSGD?(sgdVal/totalValSGD)*100:0;
@@ -1505,7 +1554,7 @@ function App(){
     const m=MKT[h.mkt]||MKT.US,sc=scoreH(h),r=getRec(h),bs=buffettScore(h);
     const gainPct=((h.price-h.avgCost)/h.avgCost)*100,upside=((h.intrinsic-h.price)/h.price)*100;
     const localVal=h.price*h.shares,localCost=h.avgCost*h.shares,localGain=localVal-localCost,localDiv=(h.divYield/100)*localVal;
-    const sgdVal=toSGD(localVal,h.mkt),sgdCost=toSGD(localCost,h.mkt),sgdGain=toSGD(localGain,h.mkt),sgdDiv=toSGD(localDiv,h.mkt);
+    const sgdVal=toSGDlive(localVal,h.mkt),sgdCost=toSGDlive(localCost,h.mkt),sgdGain=toSGDlive(localGain,h.mkt),sgdDiv=toSGDlive(localDiv,h.mkt);
     const w=wtTotal(h),pos=gainPct>=0;
     const analysis=aiText[h.ticker],loading=aiLoad[h.ticker];
     const buyHist=trades.filter(t=>t.ticker===h.ticker&&t.type==="BUY").sort((a,b)=>a.date.localeCompare(b.date));
@@ -1533,7 +1582,7 @@ function App(){
             <div style={{background:C.surface,borderRadius:9,padding:"10px 10px"}}>
               <div style={{fontSize:9,color:C.muted,marginBottom:2}}>Avg Cost</div>
               <div style={{fontSize:15,fontWeight:800}}>{fmtL(h.avgCost,h.mkt)}</div>
-              <div style={{fontSize:9,color:C.muted}}>{fmtS(toSGD(h.avgCost,h.mkt))}</div>
+              <div style={{fontSize:9,color:C.muted}}>{fmtS(toSGDlive(h.avgCost,h.mkt))}</div>
             </div>
             <div style={{background:C.surface,borderRadius:9,padding:"10px 10px"}}>
               <div style={{fontSize:9,color:C.muted,marginBottom:2}}>Price ({m.code})</div>
@@ -1586,7 +1635,7 @@ function App(){
           <div style={{background:C.accent+"0D",border:`1px solid ${C.accentDim}30`,borderRadius:10,padding:"12px 14px",marginBottom:10}}>
             <div style={{fontSize:9,color:C.accent,fontWeight:700,letterSpacing:"0.08em",marginBottom:8}}>POSITION</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 14px",marginBottom:8}}>
-              {[["Shares",h.shares.toLocaleString(),null],["Avg Cost",fmtL(h.avgCost,h.mkt),fmtS(toSGD(h.avgCost,h.mkt))],["Market Value",fmtL(localVal,h.mkt,0),fmtS(sgdVal)],["Cost Basis",fmtL(localCost,h.mkt,0),fmtS(sgdCost)],["Unrealized P&L",`${pos?"+":"-"}${fmtL(Math.abs(localGain),h.mkt,0)}`,`${pos?"+":"-"}${fmtS(Math.abs(sgdGain))}`],["Annual Div (est.)",fmtL(localDiv,h.mkt,0),fmtS(sgdDiv)]].map(([l,v,sub])=>(
+              {[["Shares",h.shares.toLocaleString(),null],["Avg Cost",fmtL(h.avgCost,h.mkt),fmtS(toSGDlive(h.avgCost,h.mkt))],["Market Value",fmtL(localVal,h.mkt,0),fmtS(sgdVal)],["Cost Basis",fmtL(localCost,h.mkt,0),fmtS(sgdCost)],["Unrealized P&L",`${pos?"+":"-"}${fmtL(Math.abs(localGain),h.mkt,0)}`,`${pos?"+":"-"}${fmtS(Math.abs(sgdGain))}`],["Annual Div (est.)",fmtL(localDiv,h.mkt,0),fmtS(sgdDiv)]].map(([l,v,sub])=>(
                 <div key={l}><div style={{fontSize:9,color:C.muted}}>{l}</div><div style={{fontSize:13,fontWeight:700,color:l==="Unrealized P&L"?(pos?C.green:C.red):C.text}}>{v}</div>{sub&&<div style={{fontSize:9,color:C.muted}}>{sub}</div>}</div>
               ))}
             </div>
@@ -1752,7 +1801,7 @@ function App(){
           {ready&&(()=>{
             const p=parseFloat(f.price),ac=parseFloat(f.avgCost),s=parseInt(f.shares);
             const gain=((p-ac)/ac)*100;
-            const localVal=p*s,sgdVal=toSGD(localVal,f.mkt||"US");
+            const localVal=p*s,sgdVal=toSGDlive(localVal,f.mkt||"US");
             return(
               <div style={{background:C.accent+"0D",border:`1px solid ${C.accentDim}30`,borderRadius:8,padding:"10px 12px",marginBottom:12}}>
                 <div style={{fontSize:9,color:C.accent,fontWeight:700,marginBottom:6}}>PREVIEW</div>
@@ -1783,7 +1832,7 @@ function App(){
     const h=holdings.find(x=>x.id===deleteConfirm);
     if(!h)return null;
     const localVal=h.price*h.shares;
-    const sgdVal=toSGD(localVal,h.mkt);
+    const sgdVal=toSGDlive(localVal,h.mkt);
     return(
       <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:70,padding:"0 20px"}}>
         <div style={{background:C.card,borderRadius:16,padding:24,width:"100%",maxWidth:360,border:`1px solid ${C.red}44`}}>
@@ -1843,7 +1892,7 @@ function App(){
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
             </div>
             <div style={{fontSize:30,fontWeight:800,letterSpacing:"-1px",lineHeight:1}}>{fmtS(totalValSGD)}</div>
-            <div style={{fontSize:10,color:C.muted,marginTop:3}}>{holdings.length} stocks · {totalShares.toLocaleString()} shares{priceUpdated&&<span style={{color:C.green}}> · prices {priceUpdated.toLocaleTimeString("en-SG",{hour:"2-digit",minute:"2-digit"})}</span>}</div>
+            <div style={{fontSize:10,color:C.muted,marginTop:3}}>{holdings.length} stocks · {totalShares.toLocaleString()} shares{priceUpdated&&<span style={{color:C.green}}> · prices {priceUpdated.toLocaleTimeString("en-SG",{hour:"2-digit",minute:"2-digit"})}</span>}{fxUpdated&&<span style={{color:C.gold}}> · FX {fxUpdated.toLocaleTimeString("en-SG",{hour:"2-digit",minute:"2-digit"})}</span>}</div>
           </div>
           <div style={{textAlign:"right"}}>
             <div style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 10px",borderRadius:20,fontSize:13,fontWeight:700,background:unrealSGD>=0?C.green+"18":C.red+"18",color:unrealSGD>=0?C.green:C.red}}>{unrealSGD>=0?"UP":"DN"} {fmtPct(unrealPct)}</div>
@@ -1877,7 +1926,7 @@ function App(){
           {priceStatus==='error'&&(
             <div style={{fontSize:9,color:C.red,padding:"4px 8px",fontWeight:700}}>Price err</div>
           )}
-          <button onClick={()=>fetchLivePrices(holdings)} title="Update live prices" style={{
+          <button onClick={()=>{fetchLivePrices(holdings);fetchLiveFx();}} title="Update live prices and FX rates" style={{
             padding:"6px 8px",borderRadius:8,cursor:"pointer",flexShrink:0,
             border:`1px solid ${C.gold}44`,background:C.gold+"12",color:C.gold,
             fontSize:10,fontWeight:700,whiteSpace:"nowrap"
