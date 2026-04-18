@@ -313,7 +313,7 @@ function App(){
     setPriceStatus('fetching');
 
     const tickers = currentHoldings.map(h => h.ticker);
-    const EDGE_URL = 'https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/get-prices';
+    const EDGE_URL = 'https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api';
 
     try {
       const res = await fetch(EDGE_URL, {
