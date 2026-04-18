@@ -465,6 +465,50 @@ function App(){
     }
   }
 
+  // ── Senate trade management ────────────────────────────────────────────────
+  function submitSenateTrade(){
+    const f=senateForm;
+    if(!f.name||!f.ticker||!f.date)return;
+    const newEntry={
+      name:f.name.trim(), party:f.party, ticker:f.ticker.trim().toUpperCase(),
+      action:f.action, amount:f.amount, date:f.date,
+      sector:f.sector, estPrice:parseFloat(f.estPrice)||0,
+      priceNow:parseFloat(f.priceNow)||0, source:f.source,
+    };
+    const updated=[newEntry,...senateList];
+    setSenateList(updated);
+    // Also update module-level SENATE array so it persists within session
+    SENATE.unshift(newEntry);
+    // Save to Supabase if available
+    if(window.portfolioDB&&window.portfolioDB.saveSenate){
+      window.portfolioDB.saveSenate(newEntry).catch(e=>console.warn('Senate save:',e));
+    } else {
+      // PWA: save directly to Supabase via REST
+      const SB='https://ckyshjxznltdkxfvhfdy.supabase.co';
+      const KEY='sb_publishable_y-wyxLIPM0eiQOezFH6UYQ_WEJzxLGz';
+      fetch(SB+'/rest/v1/senate',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','apikey':KEY,'Authorization':'Bearer '+KEY,'Prefer':'return=minimal'},
+        body:JSON.stringify({
+          name:newEntry.name, party:newEntry.party, ticker:newEntry.ticker,
+          action:newEntry.action, amount:newEntry.amount, date:newEntry.date,
+          sector:newEntry.sector, est_price:newEntry.estPrice,
+          price_now:newEntry.priceNow, source:newEntry.source,
+        }),
+      }).then(r=>console.log('Senate saved:',r.status)).catch(e=>console.warn('Senate REST:',e));
+    }
+    setSenateForm({name:'',party:'D',ticker:'',action:'BUY',amount:'$15K-50K',
+      date:new Date().toISOString().slice(0,10),sector:'Technology',
+      estPrice:'',priceNow:'',source:'Unusual Whales'});
+    setShowSenateForm(false);
+  }
+
+  function deleteSenateEntry(idx){
+    const updated=senateList.filter((_,i)=>i!==idx);
+    setSenateList(updated);
+    SENATE.splice(idx,1);
+  }
+
   // ── Live FX rates — fetched on app open ─────────────────────────────────────
   async function fetchLiveFx(){
     try{
@@ -487,6 +531,13 @@ function App(){
 
   // ── Real historical price data — Finnhub via Edge Function ──────────────────
   const [realHist,setRealHist]=useState({});
+  const [showSenateForm,setShowSenateForm]=useState(false);
+  const [senateForm,setSenateForm]=useState({
+    name:'',party:'D',ticker:'',action:'BUY',amount:'$15K-50K',
+    date:new Date().toISOString().slice(0,10),sector:'Technology',
+    estPrice:'',priceNow:'',source:'Unusual Whales'
+  });
+  const [senateList,setSenateList]=useState(SENATE);
   const [perfChartData,setPerfChartData]=useState({}); // {period: {portfolio:[],index:[]}}
   const [perfChartLoading,setPerfChartLoading]=useState({});
 
@@ -1086,16 +1137,103 @@ function App(){
 
         {insightTab==="senate"&&(
           <div style={card}>
-            <div style={cardT}>US Senate Top 10 Recent Trades</div>
-            <div style={{fontSize:10,color:C.muted,marginBottom:12,padding:"6px 10px",background:C.surface,borderRadius:6}}>
-              Prices sourced from Unusual Whales &amp; Quiver Quantitative. Est. trade price based on date-of-filing midpoint. STOCK Act requires disclosure within 30-45 days.
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={cardT}>US Senate Trades</div>
+              <button onClick={()=>setShowSenateForm(v=>!v)} style={{
+                fontSize:11,padding:"5px 12px",borderRadius:7,cursor:"pointer",fontWeight:700,
+                background:showSenateForm?C.surface:C.accent+"18",
+                border:`1px solid ${showSenateForm?C.border:C.accent}`,
+                color:showSenateForm?C.muted:C.accent,
+              }}>{showSenateForm?"✕ Cancel":"+ Add Trade"}</button>
             </div>
-            {SENATE.map((s,i)=>{
+
+            {/* Add Senate Trade Form */}
+            {showSenateForm&&(
+              <div style={{background:C.surface,borderRadius:10,padding:14,marginBottom:14,border:`1px solid ${C.accent}33`}}>
+                <div style={{fontWeight:700,color:C.accent,fontSize:12,marginBottom:10}}>New Senate Trade</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+                  <div>
+                    <div style={{fontSize:9,color:C.muted,marginBottom:3}}>Senator Name</div>
+                    <input value={senateForm.name} onChange={e=>setSenateForm(f=>({...f,name:e.target.value}))}
+                      placeholder="e.g. Nancy Pelosi" style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:9,color:C.muted,marginBottom:3}}>Party</div>
+                    <select value={senateForm.party} onChange={e=>setSenateForm(f=>({...f,party:e.target.value}))}
+                      style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12}}>
+                      <option value="D">Democrat (D)</option>
+                      <option value="R">Republican (R)</option>
+                      <option value="I">Independent (I)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{fontSize:9,color:C.muted,marginBottom:3}}>Ticker</div>
+                    <input value={senateForm.ticker} onChange={e=>setSenateForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}
+                      placeholder="AAPL" style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontWeight:700}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:9,color:C.muted,marginBottom:3}}>Action</div>
+                    <select value={senateForm.action} onChange={e=>setSenateForm(f=>({...f,action:e.target.value}))}
+                      style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12}}>
+                      <option value="BUY">BUY</option>
+                      <option value="SELL">SELL</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{fontSize:9,color:C.muted,marginBottom:3}}>Amount Range</div>
+                    <select value={senateForm.amount} onChange={e=>setSenateForm(f=>({...f,amount:e.target.value}))}
+                      style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12}}>
+                      {["$1K-15K","$15K-50K","$50K-100K","$100K-250K","$250K-500K","$500K-1M","$1M-5M","$5M+"].map(a=><option key={a} value={a}>{a}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{fontSize:9,color:C.muted,marginBottom:3}}>Trade Date</div>
+                    <input type="date" value={senateForm.date} onChange={e=>setSenateForm(f=>({...f,date:e.target.value}))}
+                      style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:9,color:C.muted,marginBottom:3}}>Est. Trade Price (USD)</div>
+                    <input type="number" value={senateForm.estPrice} onChange={e=>setSenateForm(f=>({...f,estPrice:e.target.value}))}
+                      placeholder="0.00" style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:9,color:C.muted,marginBottom:3}}>Current Price (USD)</div>
+                    <input type="number" value={senateForm.priceNow} onChange={e=>setSenateForm(f=>({...f,priceNow:e.target.value}))}
+                      placeholder="0.00" style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12}}/>
+                  </div>
+                  <div>
+                    <div style={{fontSize:9,color:C.muted,marginBottom:3}}>Sector</div>
+                    <select value={senateForm.sector} onChange={e=>setSenateForm(f=>({...f,sector:e.target.value}))}
+                      style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12}}>
+                      {["Technology","Healthcare","Financials","Consumer Disc.","Industrials","Energy","Utilities","Materials","Real Estate","Comm. Services","Consumer Staples"].map(s=><option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{fontSize:9,color:C.muted,marginBottom:3}}>Source</div>
+                    <select value={senateForm.source} onChange={e=>setSenateForm(f=>({...f,source:e.target.value}))}
+                      style={{width:"100%",padding:"7px 8px",borderRadius:6,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12}}>
+                      <option value="Unusual Whales">Unusual Whales</option>
+                      <option value="Quiver Quant">Quiver Quant</option>
+                      <option value="Senate STOCK Act">Senate STOCK Act</option>
+                    </select>
+                  </div>
+                </div>
+                <button onClick={submitSenateTrade} style={{
+                  width:"100%",padding:"10px",borderRadius:8,border:"none",
+                  background:C.accent,color:"#000",fontWeight:700,fontSize:13,cursor:"pointer"
+                }}>💾 Save Senate Trade</button>
+              </div>
+            )}
+
+            <div style={{fontSize:10,color:C.muted,marginBottom:12,padding:"6px 10px",background:C.surface,borderRadius:6}}>
+              Prices from Unusual Whales &amp; Quiver Quantitative. STOCK Act requires disclosure within 30-45 days.
+            </div>
+            {senateList.map((s,i)=>{
               const inPort=holdings.find(h=>h.ticker===s.ticker);
               const sinceGain=s.estPrice>0?((s.priceNow-s.estPrice)/s.estPrice*100):null;
               const isProfit=s.action==="BUY"?sinceGain>=0:sinceGain<=0;
               return(
-                <div key={i} style={{marginBottom:14,paddingBottom:14,borderBottom:i<SENATE.length-1?`1px solid ${C.border}`:"none"}}>
+                <div key={i} style={{marginBottom:14,paddingBottom:14,borderBottom:i<senateList.length-1?`1px solid ${C.border}`:"none"}}>
                   <div style={{...row,marginBottom:6}}>
                     <div>
                       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
@@ -1146,6 +1284,7 @@ function App(){
                       </div>
                     </div>
                   )}
+                  <button onClick={()=>deleteSenateEntry(i)} style={{marginTop:6,fontSize:9,padding:"3px 8px",borderRadius:5,border:`1px solid ${C.red}44`,background:C.red+"11",color:C.red,cursor:"pointer"}}>🗑 Remove</button>
                 </div>
               );
             })}
