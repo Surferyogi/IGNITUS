@@ -31,31 +31,9 @@ const MS_STYLES=["Large Growth","Large Blend","Large Value","Mid Growth","Mid Bl
 const SCOL=[C.accent,C.green,C.gold,C.purple,"#FF8C42","#FF4D6A","#62D2E8","#C084FC","#FDE68A","#A3E635","#FB923C"];
 
 
-// Seeded RNG - no < operators
-const sr=seed=>{let s=seed%2147483647;return()=>{s=(s*16807)%2147483647;return(s-1)/2147483646;};};
+// Price history is fetched from Yahoo Finance via Edge Function - no simulation
 
-// Price history generator - uses Array.from to avoid for-loop with i<days
-const gH=(base,seed,days)=>{
-  const r=sr(seed);
-  let v=base*(1-(days/3650)*0.8);
-  const pts=Array.from({length:days},()=>{v=v*(1+(r()-0.47)*0.018);return +v.toFixed(4);});
-  pts.push(base);
-  return pts;
-};
-
-// Pre-build histories for each period per holding
-const HIST={};
-ALL_H.forEach((h,i)=>{
-  HIST[h.ticker]={};
-  const daysMap={"30d":30,"6m":180,"1y":365,"5y":1825};
-  ["30d","6m","1y","5y"].forEach(p=>{
-    HIST[h.ticker][p]=gH(h.price, i*13+p.charCodeAt(0), daysMap[p]);
-  });
-  const firstDate=new Date(FIRST_BUY[h.ticker]||"2020-01-01");
-  const sinceMs=new Date("2026-04-17")-firstDate;
-  const sinceDays=Math.max(30,Math.round(sinceMs/86400000));
-  HIST[h.ticker]["all"]=gH(h.price, i*13+97, sinceDays);
-});
+// HIST removed - all chart data is real from Yahoo Finance
 
 // Scoring - avoid bare < in expressions by using negation where possible
 const scoreH=h=>{
@@ -217,107 +195,118 @@ function MiniSparkline({data,color=C.accent}){
 }
 
 // Performance chart with period support
-function PerfChart({mktFilter,period,holdings}){
-  const subset=mktFilter==="ALL"?holdings:holdings.filter(h=>h.mkt===mktFilter);
+function PerfChart({mktFilter,period,holdings,perfChartData,perfChartLoading,fetchPerfChartData}){
   const m=MKT[mktFilter];
   const idxName=mktFilter==="ALL"?"S&P 500":(m?.index||"Index");
-  const idxYtd=mktFilter==="ALL"?14.8:(m?.idxYtd||0);
-  const rng=sr(mktFilter.charCodeAt(0)*7+period.charCodeAt(0));
-  const daysMap={"30d":30,"6m":180,"1y":365,"5y":1825,"all":1825};
-  const days=daysMap[period]||180;
-  const iH=[];
-  let idxV=10000*(1-idxYtd/100*0.6);
-  Array.from({length:days+1},(_,i)=>{idxV=idxV*(1+(rng()-0.47)*0.012);iH.push(idxV);});
-  const iScale=(1+idxYtd/100)*10000/(iH[iH.length-1]||1);
-  const iN=iH.map(v=>v*iScale);
-  // Build portfolio history using gH with current prices as baseline
-  const pH=Array.from({length:days+1},(_,i)=>
-    subset.reduce((s,h)=>{
-      const hist=gH(h.price, h.ticker.charCodeAt(0)*13+period.charCodeAt(0), days);
-      const idx=Math.min(i, hist.length-1);
-      return s+toSGD((hist[idx]||h.price)*h.shares,h.mkt);
-    },0)
+  const key=mktFilter+"_"+period;
+  const chartData=perfChartData?.[key];
+  const isLoading=perfChartLoading?.[key];
+  const PLBL={"30d":"30 Days","6m":"6 Months","1y":"1 Year","5y":"5 Years","all":"Since First Buy"};
+
+  useEffect(()=>{
+    if(holdings.length>0&&fetchPerfChartData) fetchPerfChartData(mktFilter,period);
+  },[mktFilter,period,holdings.length]);
+
+  if(isLoading) return(
+    <div style={{height:160,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:8}}>
+      <div style={{fontSize:11,color:C.gold,animation:"pulse 1s ease-in-out infinite"}}>↻ Loading real market data...</div>
+      <div style={{fontSize:9,color:C.muted}}>Fetching from Yahoo Finance</div>
+    </div>
   );
-  const p0=pH[0]||1,i0=iN[0]||1;
-  // Fix final point: scale so last value = today's actual portfolio value
-  const pLast=pH[pH.length-1]||p0;
-  const actualLast=subset.reduce((s,h)=>s+toSGD(h.price*h.shares,h.mkt),0);
-  const scale=actualLast/(pLast||1);
-  const pNRaw=pH.map(v=>(v/p0)*100);
-  // Apply gentle scale correction so endpoint matches current value exactly
-  const pN=pNRaw.map((v,i)=>{
-    const t=i/(pH.length-1);
-    return v*(1-t)+v*scale*t;
-  });
-  const iNorm=iN.map(v=>(v/i0)*100);
-  const W=300,H=130;
-  const allV=[...pN,...iNorm],mn=Math.min(...allV)-3,mx=Math.max(...allV)+3;
-  const toY=v=>H-((v-mn)/(mx-mn))*H*0.88-H*0.06;
-  const toX=i=>(i/days)*W;
-  const pp=pN.map((v,i)=>`${i===0?"M":"L"}${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(" ");
-  const ip=iNorm.map((v,i)=>`${i===0?"M":"L"}${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(" ");
+
+  if(!chartData||chartData.portfolio.length<2) return(
+    <div style={{height:160,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:8}}>
+      <div style={{fontSize:11,color:C.muted}}>No chart data</div>
+      <button onClick={()=>fetchPerfChartData&&fetchPerfChartData(mktFilter,period)} style={{fontSize:10,padding:"4px 12px",borderRadius:5,border:`1px solid ${C.accent}`,background:"transparent",color:C.accent,cursor:"pointer"}}>Load Chart</button>
+    </div>
+  );
+
+  const {portfolio,index:idxArr}=chartData;
+  const n=Math.min(portfolio.length,idxArr.length);
+  const pH=portfolio.slice(0,n);
+  const iH=idxArr.slice(0,n);
+  const p0=pH[0]||1,i0=iH[0]||1;
+  const pN=pH.map(v=>(v/p0)*100);
+  const iNorm=iH.map(v=>(v/i0)*100);
   const pL=pN[pN.length-1],iL=iNorm[iNorm.length-1];
   const pR=(pL-100).toFixed(1),iR=(iL-100).toFixed(1);
-  const PLBL={"30d":"30 Days","6m":"6 Months","1y":"1 Year","5y":"5 Years","all":"Since First Buy"};
+
+  const W=300,H=130,AXIS=20;
+  const allV=[...pN,...iNorm],mn=Math.min(...allV)-2,mx=Math.max(...allV)+2;
+  const toY=v=>H-((v-mn)/(mx-mn||1))*H*0.88-H*0.06;
+  const toX=i=>(i/(n-1||1))*W;
+  const pp=pN.map((v,i)=>`${i===0?"M":"L"}${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(" ");
+  const ip=iNorm.map((v,i)=>`${i===0?"M":"L"}${toX(i).toFixed(1)},${toY(v).toFixed(1)}`).join(" ");
+
+  // Date markers
+  const now=new Date();
+  const markers=(()=>{
+    if(period==="30d") return [0,1,2,3,4].map(w=>({pos:Math.round((w/4)*(n-1)),label:w===0?"4w":w===1?"3w":w===2?"2w":w===3?"1w":"",major:true}));
+    if(period==="6m")  return Array.from({length:7},(_,i)=>({pos:Math.round((i/6)*(n-1)),label:new Date(now.getFullYear(),now.getMonth()-6+i,1).toLocaleString("default",{month:"short"}),major:true}));
+    if(period==="1y"){
+      const q=Array.from({length:5},(_,i)=>({pos:Math.round((i/4)*(n-1)),label:new Date(now.getFullYear()-1+Math.floor((now.getMonth()+i*3)/12),((now.getMonth()+i*3)%12),1).toLocaleString("default",{month:"short"}),major:true}));
+      const mt=Array.from({length:13},(_,i)=>({pos:Math.round((i/12)*(n-1)),label:"",major:false}));
+      return [...mt,...q];
+    }
+    const yrs=period==="5y"?5:10;
+    const ym=Array.from({length:yrs+1},(_,i)=>({pos:Math.min(Math.round((i/yrs)*(n-1)),n-1),label:String(now.getFullYear()-yrs+i),major:true}));
+    const qt=Array.from({length:yrs*4+1},(_,i)=>({pos:Math.min(Math.round((i/(yrs*4))*(n-1)),n-1),label:"",major:false}));
+    return [...qt,...ym];
+  })();
+
   return(
     <div>
-      <div style={{fontSize:10,color:C.muted,marginBottom:5}}>{PLBL[period]||period}</div>
       <div style={{display:"flex",gap:16,marginBottom:8,fontSize:11}}>
         <span style={{color:C.accent}}>Portfolio <b style={{color:+pR>=0?C.green:C.red}}>{+pR>=0?"+":""}{pR}%</b></span>
         <span style={{color:C.mutedLight}}>{idxName} <b style={{color:+iR>=0?C.green:C.red}}>{+iR>=0?"+":""}{iR}%</b></span>
+        <span style={{color:C.muted,fontSize:9,marginLeft:"auto"}}>● live</span>
       </div>
-      {(()=>{
-        // Date markers for PerfChart
-        const AXIS=18;
-        const perfMarkers=(()=>{
-          const n=days;
-          const now2=new Date();
-          if(period==="30d") return [0,1,2,3,4].map(w=>({pos:Math.round((w/4)*n),label:w===0?"4w":w===1?"3w":w===2?"2w":w===3?"1w":"",major:true}));
-          if(period==="6m")  return Array.from({length:7},(_,i)=>({pos:Math.round((i/6)*n),label:new Date(now2.getFullYear(),now2.getMonth()-6+i,1).toLocaleString("default",{month:"short"}),major:true}));
-          if(period==="1y"){
-            const q=Array.from({length:5},(_,i)=>({pos:Math.round((i/4)*n),label:new Date(now2.getFullYear()-1+Math.floor((now2.getMonth()+i*3)/12),((now2.getMonth()+i*3)%12),1).toLocaleString("default",{month:"short"}),major:true}));
-            const mt=Array.from({length:13},(_,i)=>({pos:Math.round((i/12)*n),label:"",major:false}));
-            return [...mt,...q];
-          }
-          const yrs=period==="5y"?5:10;
-          const ym=Array.from({length:yrs+1},(_,i)=>({pos:Math.min(Math.round((i/yrs)*n),n),label:String(now2.getFullYear()-yrs+i),major:true}));
-          const qt=Array.from({length:yrs*4+1},(_,i)=>({pos:Math.min(Math.round((i/(yrs*4))*n),n),label:"",major:false}));
-          return [...qt,...ym];
-        })();
-        return(
-          <svg width="100%" viewBox={`0 0 ${W} ${H+AXIS}`} style={{display:"block"}}>
-            <defs>
-              <linearGradient id="pGrMain" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.accent} stopOpacity="0.22"/><stop offset="100%" stopColor={C.accent} stopOpacity="0"/></linearGradient>
-              <linearGradient id="iGrMain" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.mutedLight} stopOpacity="0.1"/><stop offset="100%" stopColor={C.mutedLight} stopOpacity="0"/></linearGradient>
-            </defs>
-            {[25,50,75].map(p=>{const y=toY(mn+(mx-mn)*(p/100));return <line key={p} x1={0} y1={y} x2={W} y2={y} stroke={C.border} strokeWidth="0.5" strokeDasharray="4,4"/>;} )}
-            <path d={ip+` L${W},${H} L0,${H} Z`} fill="url(#iGrMain)"/>
-            <path d={ip} fill="none" stroke={C.mutedLight} strokeWidth="1" strokeDasharray="5,3" opacity="0.6"/>
-            <path d={pp+` L${W},${H} L0,${H} Z`} fill="url(#pGrMain)"/>
-            <path d={pp} fill="none" stroke={C.accent} strokeWidth="2" strokeLinecap="round"/>
-            <circle cx={toX(days)} cy={toY(pL)} r="3.5" fill={C.accent}/>
-            <circle cx={toX(days)} cy={toY(iL)} r="3" fill={C.mutedLight} opacity="0.7"/>
-            {/* X-axis baseline */}
-            <line x1="0" y1={H} x2={W} y2={H} stroke={C.border} strokeWidth="0.5"/>
-            {/* Date markers */}
-            {perfMarkers.map((mk,i)=>{
-              const x=(mk.pos/days)*W;
-              const labeled=perfMarkers.filter(m=>m.label);
-              const li=labeled.indexOf(mk);
-              const anchor=li===0?"start":li===labeled.length-1?"end":"middle";
-              return(
-                <g key={i}>
-                  <line x1={x} y1={H} x2={x} y2={mk.major?H+5:H+3} stroke={C.border} strokeWidth={mk.major?0.7:0.4}/>
-                  {mk.label&&<text x={x} y={H+14} textAnchor={anchor} fontSize="9" fill={C.muted}>{mk.label}</text>}
-                </g>
-              );
-            })}
-          </svg>
-        );
-      })()}
+      <svg width="100%" viewBox={`0 0 ${W} ${H+AXIS}`} style={{display:"block"}}>
+        <defs>
+          <linearGradient id="pGrMain" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={C.accent} stopOpacity="0.22"/>
+            <stop offset="100%" stopColor={C.accent} stopOpacity="0"/>
+          </linearGradient>
+          <linearGradient id="iGrMain" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={C.mutedLight} stopOpacity="0.1"/>
+            <stop offset="100%" stopColor={C.mutedLight} stopOpacity="0"/>
+          </linearGradient>
+        </defs>
+        {[25,50,75].map(pct=>{
+          const y=toY(mn+(mx-mn)*(pct/100));
+          return <line key={pct} x1={0} y1={y} x2={W} y2={y} stroke={C.border} strokeWidth="0.5" strokeDasharray="4,4"/>;
+        })}
+        <path d={ip+` L${W},${H} L0,${H} Z`} fill="url(#iGrMain)"/>
+        <path d={ip} fill="none" stroke={C.mutedLight} strokeWidth="1" strokeDasharray="5,3" opacity="0.6"/>
+        <path d={pp+` L${W},${H} L0,${H} Z`} fill="url(#pGrMain)"/>
+        <path d={pp} fill="none" stroke={C.accent} strokeWidth="2" strokeLinecap="round"/>
+        <circle cx={toX(n-1)} cy={toY(pL)} r="3.5" fill={C.accent}/>
+        <circle cx={toX(n-1)} cy={toY(iL)} r="3" fill={C.mutedLight} opacity="0.7"/>
+        <line x1="0" y1={H} x2={W} y2={H} stroke={C.border} strokeWidth="0.5"/>
+        {markers.map((mk,i)=>{
+          const x=(mk.pos/(n-1||1))*W;
+          const labeled=markers.filter(mk2=>mk2.label);
+          const li=labeled.indexOf(mk);
+          const anchor=li===0?"start":li===labeled.length-1?"end":"middle";
+          return(
+            <g key={i}>
+              <line x1={x} y1={H} x2={x} y2={mk.major?H+5:H+3} stroke={C.border} strokeWidth={mk.major?0.7:0.4}/>
+              {mk.label&&<text x={x} y={H+15} textAnchor={anchor} fontSize="9" fill={C.muted}>{mk.label}</text>}
+            </g>
+          );
+        })}
+      </svg>
+      {mktFilter!=="ALL"&&m&&(
+        <div style={{marginTop:6,padding:"4px 8px",background:C.surface,borderRadius:5,fontSize:9,display:"flex",gap:10}}>
+          <span style={{color:C.muted}}>Index: <b style={{color:C.text}}>{m.index}</b></span>
+          <span style={{color:m.idxChange>=0?C.green:C.red}}>{m.idxChange>=0?"+":""}{m.idxChange}% today</span>
+          <span style={{color:m.idxYtd>=0?C.green:C.red}}>YTD {m.idxYtd>=0?"+":""}{m.idxYtd}%</span>
+        </div>
+      )}
     </div>
   );
 }
+
 
 function DonutChart({data,size=96}){
   const total=data.reduce((s,d)=>s+d.value,0)||1;
@@ -469,7 +458,63 @@ function App(){
   }
 
   // ── Real historical price data — Finnhub via Edge Function ──────────────────
-  const [realHist,setRealHist]=useState({}); // cache: {ticker: {period: [closes]}}
+  const [realHist,setRealHist]=useState({});
+  const [perfChartData,setPerfChartData]=useState({}); // {period: {portfolio:[],index:[]}}
+  const [perfChartLoading,setPerfChartLoading]=useState({});
+
+  // Index ETF tickers for each market (used in PerfChart)
+  const INDEX_ETFS={
+    ALL:"SPY", US:"SPY", SG:"ES3.SI", CN:"2800.HK", JP:"1306.T", EU:"CSPX.L"
+  };
+
+  async function fetchPerfChartData(mktFilter, period){
+    const key=mktFilter+"_"+period;
+    if(perfChartData[key]) return;
+    if(perfChartLoading[key]) return;
+    setPerfChartLoading(prev=>({...prev,[key]:true}));
+
+    const subset=(mktFilter==="ALL"?holdings:holdings.filter(h=>h.mkt===mktFilter));
+    if(subset.length===0){setPerfChartLoading(prev=>({...prev,[key]:false}));return;}
+
+    // Index ETF per market
+    const INDEX_ETFS={ALL:"SPY",US:"SPY",SG:"ES3.SI",CN:"2800.HK",JP:"1306.T",EU:"CSPX.L"};
+    const idxTicker=INDEX_ETFS[mktFilter]||"SPY";
+
+    // Top holdings by value (max 8 to stay within edge fn timeout)
+    const top=[...subset].sort((a,b)=>toSGD(b.price*b.shares,b.mkt)-toSGD(a.price*a.shares,a.mkt)).slice(0,8);
+    const holdingTickers=top.map(h=>h.ticker);
+
+    try{
+      const res=await fetch("https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({action:"portfolio_chart",indexTicker:idxTicker,holdingTickers,period}),
+      });
+      if(!res.ok) throw new Error("HTTP "+res.status);
+      const d=await res.json();
+
+      const indexCloses=d.indexCloses||[];
+      const holdingHistories=d.holdingHistories||{};
+      if(indexCloses.length<2) throw new Error("No index data");
+
+      const n=indexCloses.length;
+
+      // Build portfolio value series aligned to index length
+      const portfolioSeries=Array.from({length:n},(_,i)=>{
+        return top.reduce((s,h)=>{
+          const hc=holdingHistories[h.ticker];
+          if(!hc||hc.length<2) return s+toSGD(h.price*h.shares,h.mkt);
+          const idx=Math.round((i/(n-1||1))*(hc.length-1));
+          return s+toSGD((hc[Math.min(idx,hc.length-1)]||h.price)*h.shares,h.mkt);
+        },0);
+      });
+
+      setPerfChartData(prev=>({...prev,[key]:{portfolio:portfolioSeries,index:indexCloses}}));
+      console.log("PerfChart loaded:",mktFilter,period,"pts:",n,"holdings:",Object.keys(holdingHistories).length);
+    }catch(e){
+      console.warn("PerfChart failed:",mktFilter,period,e.message);
+    }
+    setPerfChartLoading(prev=>({...prev,[key]:false}));
+  } // cache: {ticker: {period: [closes]}}
   const [histLoading,setHistLoading]=useState({});
 
   async function fetchRealHistory(ticker, mkt, period){
@@ -836,14 +881,8 @@ function App(){
               {PERIODS.map(p=><button key={p} style={smPill(chartPeriod===p)} onClick={()=>setChartPeriod(p)}>{PLBL[p]}</button>)}
             </div>
           </div>
-          <PerfChart mktFilter={mktFilter} period={chartPeriod} holdings={holdings}/>
-          {mktFilter!=="ALL"&&activeM&&(
-            <div style={{marginTop:8,padding:"5px 10px",background:C.surface,borderRadius:6,fontSize:10,display:"flex",gap:10,flexWrap:"wrap"}}>
-              <span style={{color:C.muted}}>Index: <b style={{color:C.text}}>{activeM.index}</b></span>
-              <span style={{color:activeM.idxChange>=0?C.green:C.red}}>{activeM.idxChange>=0?"+":""}{activeM.idxChange}% today</span>
-              <span style={{color:activeM.idxYtd>=0?C.green:C.red}}>YTD {activeM.idxYtd>=0?"+":""}{activeM.idxYtd}%</span>
-            </div>
-          )}
+          <PerfChart mktFilter={mktFilter} period={chartPeriod} holdings={holdings} perfChartData={perfChartData} perfChartLoading={perfChartLoading} fetchPerfChartData={fetchPerfChartData}/>
+
         </div>
         <div style={card}>
           <div style={cardT}>Allocation (SGD)</div>
@@ -944,7 +983,6 @@ function App(){
                 const g=((h.price-h.avgCost)/h.avgCost)*100;
                 const lg=(h.price-h.avgCost)*h.shares;
                 const up=((h.intrinsic-h.price)/h.price)*100;
-                const hist=HIST[h.ticker]?.["6m"]||[];
                 return(
                   <div key={h.ticker} style={{marginBottom:10,paddingBottom:10,borderBottom:i<9?`1px solid ${C.border}`:"none",cursor:"pointer"}} onClick={()=>{setSel(h);setDetailPeriod("6m");}}>
                     <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -953,7 +991,7 @@ function App(){
                         <div style={{display:"flex",alignItems:"center",gap:5}}><span style={{fontWeight:700,fontSize:13}}>{h.ticker}</span><Chip mkt={h.mkt}/></div>
                         <div style={{fontSize:10,color:C.muted,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{h.name}</div>
                       </div>
-                      <div style={{flexShrink:0}}><MiniSparkline data={hist} color={C.green}/></div>
+
                       <div style={{textAlign:"right",flexShrink:0}}>
                         <div style={{fontSize:14,fontWeight:800,color:C.green}}>{fmtPct(g)}</div>
                         <div style={{fontSize:10,fontWeight:700,color:C.green}}>+{fmtL(lg,h.mkt,0)}</div>
@@ -975,7 +1013,6 @@ function App(){
                 const lg=(h.price-h.avgCost)*h.shares;
                 const pos=lg>=0;
                 const up=((h.intrinsic-h.price)/h.price)*100;
-                const hist=HIST[h.ticker]?.["6m"]||[];
                 return(
                   <div key={h.ticker} style={{marginBottom:10,paddingBottom:10,borderBottom:i<9?`1px solid ${C.border}`:"none",cursor:"pointer"}} onClick={()=>{setSel(h);setDetailPeriod("6m");}}>
                     <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -984,7 +1021,7 @@ function App(){
                         <div style={{display:"flex",alignItems:"center",gap:5}}><span style={{fontWeight:700,fontSize:13}}>{h.ticker}</span><Chip mkt={h.mkt}/></div>
                         <div style={{fontSize:10,color:C.muted,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{h.name}</div>
                       </div>
-                      <div style={{flexShrink:0}}><MiniSparkline data={hist} color={C.red}/></div>
+
                       <div style={{textAlign:"right",flexShrink:0}}>
                         <div style={{fontSize:14,fontWeight:800,color:C.red}}>{fmtPct(g)}</div>
                         <div style={{fontSize:10,fontWeight:700,color:pos?C.green:C.red}}>{pos?"+":"-"}{fmtL(Math.abs(lg),h.mkt,0)}</div>
@@ -1527,15 +1564,23 @@ function App(){
               </div>
             </div>
             {(()=>{
-              const hData=realHist[h.ticker]?.[detailPeriod]||HIST[h.ticker]?.[detailPeriod]||[];
-              const isReal=!!(realHist[h.ticker]?.[detailPeriod]);
+              const hData=realHist[h.ticker]?.[detailPeriod];
               const isLoading=histLoading[h.ticker+'_'+detailPeriod];
+              if(isLoading) return(
+                <div style={{height:80,display:"flex",alignItems:"center",justifyContent:"center",background:C.surface,borderRadius:8}}>
+                  <div style={{fontSize:11,color:C.gold,animation:"pulse 1s ease-in-out infinite"}}>↻ Loading chart data...</div>
+                </div>
+              );
+              if(!hData||hData.length<2) return(
+                <div style={{height:80,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:C.surface,borderRadius:8,gap:6}}>
+                  <div style={{fontSize:11,color:C.muted}}>No chart data</div>
+                  <button onClick={()=>fetchRealHistory(h.ticker,h.mkt,detailPeriod)} style={{fontSize:10,padding:"3px 10px",borderRadius:5,border:`1px solid ${C.accent}`,background:"transparent",color:C.accent,cursor:"pointer"}}>Load Chart</button>
+                </div>
+              );
               return(
                 <div style={{position:"relative"}}>
                   <Sparkline data={hData} color={pos?C.green:C.red} height={60} period={detailPeriod}/>
-                  {isLoading&&<div style={{position:"absolute",top:2,right:2,fontSize:9,color:C.gold,animation:"pulse 1s ease-in-out infinite"}}>↻ live data</div>}
-                  {isReal&&!isLoading&&<div style={{position:"absolute",top:2,right:2,fontSize:9,color:C.green}}>● live</div>}
-                  {!isReal&&!isLoading&&<div onClick={()=>fetchRealHistory(h.ticker,h.mkt,detailPeriod)} style={{position:"absolute",top:2,right:2,fontSize:9,color:C.muted,cursor:"pointer"}}>↻ reload</div>}
+                  <div style={{position:"absolute",top:2,right:2,fontSize:9,color:C.green}}>● live</div>
                 </div>
               );
             })()}
