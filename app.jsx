@@ -4,18 +4,11 @@
 
 const { useState, useMemo, useEffect, useCallback } = React;
 
-// These are filled from DB on load — start empty, populated in App useEffect
-let ALL_H = window.__PORTFOLIO_DATA__?.holdings || [];
-let ALL_T = window.__PORTFOLIO_DATA__?.trades   || [];
-let SENATE = window.__PORTFOLIO_DATA__?.senate  || [];
-
-// Reconstruct FIRST_BUY from trades (earliest BUY date per ticker)
-const _buysByTicker = {};
-ALL_T.filter(t=>t.type==='BUY').forEach(t=>{
-  if(!_buysByTicker[t.ticker]||t.date<_buysByTicker[t.ticker])
-    _buysByTicker[t.ticker]=t.date;
-});
-let FIRST_BUY = _buysByTicker;
+// Static fallbacks — replaced immediately by live DB data in App useEffect
+let ALL_H = [];
+let ALL_T = [];
+let SENATE = [];
+let FIRST_BUY = {};
 
 
 const C={bg:"#0A0D14",surface:"#111620",card:"#161C2A",border:"#1E2A3E",accent:"#00D4FF",accentDim:"#0099BB",green:"#00E5A0",red:"#FF4D6A",gold:"#FFB547",purple:"#9B6DFF",text:"#E8EDF5",muted:"#6B7A99",mutedLight:"#8B97B3"};
@@ -283,6 +276,29 @@ function App(){
 
   // ── DB persistence ────────────────────────────────────────────────────────────
   const [dbStatus,setDbStatus]=useState('ready'); // 'ready' | 'saving' | 'saved' | 'error'
+  const [isLoading,setIsLoading]=useState(true);
+
+  // ── Load data from Supabase on mount ─────────────────────────────────────────
+  useEffect(()=>{
+    if(!window.portfolioDB)return;
+    setIsLoading(true);
+    window.portfolioDB.load().then(data=>{
+      if(data.holdings&&data.holdings.length>0){
+        setHoldings(data.holdings);
+        setTrades(data.trades||[]);
+        // Rebuild FIRST_BUY from trades
+        const fb={};
+        (data.trades||[]).filter(t=>t.type==='BUY').forEach(t=>{
+          if(!fb[t.ticker]||t.date<fb[t.ticker])fb[t.ticker]=t.date;
+        });
+        FIRST_BUY=fb;
+      }
+      setIsLoading(false);
+    }).catch(e=>{
+      console.error('Failed to load from DB:',e);
+      setIsLoading(false);
+    });
+  },[]);
 
   // Auto-persist holdings to SQLite whenever they change (debounced 600ms)
   useEffect(()=>{
@@ -1535,6 +1551,15 @@ function App(){
   const refreshTs=lastRefresh?lastRefresh.toLocaleTimeString("en-SG",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):null;
   return(
     <div style={{fontFamily:"'DM Sans',system-ui,sans-serif",background:C.bg,minHeight:"100vh",color:C.text,maxWidth:430,margin:"0 auto",position:"relative"}}>
+      {isLoading&&(
+        <div style={{position:"fixed",inset:0,background:"#0A0D14",zIndex:999,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:16}}>
+          <div style={{fontSize:28,fontWeight:800,color:"#00D4FF",letterSpacing:"-1px"}}>IGNITUS</div>
+          <div style={{fontSize:12,color:"#6B7A99"}}>Loading portfolio...</div>
+          <div style={{width:120,height:2,background:"#1E2A3E",borderRadius:1,overflow:"hidden"}}>
+            <div style={{width:"55%",height:"100%",background:"#00D4FF",borderRadius:1,animation:"pulse 1s ease-in-out infinite"}}/>
+          </div>
+        </div>
+      )}
       <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap');*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}::-webkit-scrollbar{display:none;}@keyframes pulse{0%,100%{opacity:0.4}50%{opacity:1}}@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}@keyframes fadeDown{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(8px)}}`}</style>
       <div style={{padding:"48px 18px 14px",background:`linear-gradient(180deg,${C.surface} 0%,${C.bg} 100%)`,borderBottom:`1px solid ${C.border}`}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
