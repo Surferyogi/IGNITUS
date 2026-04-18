@@ -154,23 +154,24 @@ function MiniSparkline({data,color=C.accent}){
 }
 
 // Performance chart with period support
-function PerfChart({mktFilter,period}){
-  const subset=mktFilter==="ALL"?ALL_H:ALL_H.filter(h=>h.mkt===mktFilter);
+function PerfChart({mktFilter,period,holdings}){
+  const subset=mktFilter==="ALL"?holdings:holdings.filter(h=>h.mkt===mktFilter);
   const m=MKT[mktFilter];
   const idxName=mktFilter==="ALL"?"S&P 500":(m?.index||"Index");
   const idxYtd=mktFilter==="ALL"?14.8:(m?.idxYtd||0);
   const rng=sr(mktFilter.charCodeAt(0)*7+period.charCodeAt(0));
-  const refData=subset.length>0?HIST[subset[0].ticker]?.[period]:null;
-  const days=(refData?.length||61)-1;
+  const daysMap={"30d":30,"6m":180,"1y":365,"5y":1825,"all":1825};
+  const days=daysMap[period]||180;
   const iH=[];
   let idxV=10000*(1-idxYtd/100*0.6);
   Array.from({length:days+1},(_,i)=>{idxV=idxV*(1+(rng()-0.47)*0.012);iH.push(idxV);});
   const iScale=(1+idxYtd/100)*10000/(iH[iH.length-1]||1);
   const iN=iH.map(v=>v*iScale);
+  // Build portfolio history using gH with current prices as baseline
   const pH=Array.from({length:days+1},(_,i)=>
     subset.reduce((s,h)=>{
-      const hist=HIST[h.ticker]?.[period]||[];
-      const idx=Math.round((i/days)*(hist.length-1));
+      const hist=gH(h.price, h.ticker.charCodeAt(0)*13+period.charCodeAt(0), days);
+      const idx=Math.min(i, hist.length-1);
       return s+toSGD((hist[idx]||h.price)*h.shares,h.mkt);
     },0)
   );
@@ -367,28 +368,34 @@ function App(){
 
   async function fetchRealHistory(ticker, mkt, period){
     const cacheKey=ticker+'_'+period;
-    if(realHist[ticker]?.[period]) return; // already cached
-    if(histLoading[cacheKey]) return;       // already fetching
-
+    if(realHist[ticker]?.[period]) return;
+    if(histLoading[cacheKey]) return;
     setHistLoading(prev=>({...prev,[cacheKey]:true}));
+    // 15 second timeout for edge function
+    const controller=new AbortController();
+    const timer=setTimeout(()=>controller.abort(),15000);
     try{
       const res=await fetch('https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action:'history',ticker,mkt,period}),
+        signal:controller.signal,
       });
+      clearTimeout(timer);
       if(!res.ok) throw new Error('HTTP '+res.status);
       const d=await res.json();
-      if(d.closes && d.closes.length>1){
-        setRealHist(prev=>({
-          ...prev,
-          [ticker]:{...(prev[ticker]||{}), [period]:d.closes}
-        }));
+      if(d.closes&&d.closes.length>1){
+        setRealHist(prev=>({...prev,[ticker]:{...(prev[ticker]||{}),[period]:d.closes}}));
+        console.log('History loaded:',ticker,period,d.closes.length,'pts');
+      } else {
+        console.warn('No closes for',ticker,period,'response:',JSON.stringify(d).slice(0,100));
       }
     }catch(e){
-      console.warn('History fetch failed:',ticker,period,e.message);
+      clearTimeout(timer);
+      console.warn('History failed:',ticker,period,e.message);
+    } finally {
+      setHistLoading(prev=>({...prev,[cacheKey]:false}));
     }
-    setHistLoading(prev=>({...prev,[cacheKey]:false}));
   }
 
   // Auto-persist holdings to SQLite whenever they change (debounced 600ms)
@@ -723,7 +730,7 @@ function App(){
               {PERIODS.map(p=><button key={p} style={smPill(chartPeriod===p)} onClick={()=>setChartPeriod(p)}>{PLBL[p]}</button>)}
             </div>
           </div>
-          <PerfChart mktFilter={mktFilter} period={chartPeriod}/>
+          <PerfChart mktFilter={mktFilter} period={chartPeriod} holdings={holdings}/>
           {mktFilter!=="ALL"&&activeM&&(
             <div style={{marginTop:8,padding:"5px 10px",background:C.surface,borderRadius:6,fontSize:10,display:"flex",gap:10,flexWrap:"wrap"}}>
               <span style={{color:C.muted}}>Index: <b style={{color:C.text}}>{activeM.index}</b></span>
@@ -1356,11 +1363,11 @@ function App(){
   // ── Holding detail modal ─────────────────────────────────────────────────────
   function HoldingDetail(){
     const h=sel;if(!h)return null;
-    // Fetch real history for all periods when holding is opened
+    // Fetch real history for current period when period changes
     useEffect(()=>{
       if(!h)return;
-      ['30d','6m','1y','5y'].forEach(p=>fetchRealHistory(h.ticker,h.mkt,p));
-    },[h?.ticker]);
+      fetchRealHistory(h.ticker,h.mkt,detailPeriod);
+    },[h?.ticker,detailPeriod]);
     const m=MKT[h.mkt]||MKT.US,sc=scoreH(h),r=getRec(h),bs=buffettScore(h);
     const gainPct=((h.price-h.avgCost)/h.avgCost)*100,upside=((h.intrinsic-h.price)/h.price)*100;
     const localVal=h.price*h.shares,localCost=h.avgCost*h.shares,localGain=localVal-localCost,localDiv=(h.divYield/100)*localVal;
@@ -1419,8 +1426,9 @@ function App(){
               return(
                 <div style={{position:"relative"}}>
                   <Sparkline data={hData} color={pos?C.green:C.red} height={60}/>
-                  {isLoading&&<div style={{position:"absolute",top:2,right:2,fontSize:9,color:C.gold}}>loading...</div>}
+                  {isLoading&&<div style={{position:"absolute",top:2,right:2,fontSize:9,color:C.gold,animation:"pulse 1s ease-in-out infinite"}}>↻ live data</div>}
                   {isReal&&!isLoading&&<div style={{position:"absolute",top:2,right:2,fontSize:9,color:C.green}}>● live</div>}
+                  {!isReal&&!isLoading&&<div onClick={()=>fetchRealHistory(h.ticker,h.mkt,detailPeriod)} style={{position:"absolute",top:2,right:2,fontSize:9,color:C.muted,cursor:"pointer"}}>↻ reload</div>}
                 </div>
               );
             })()}
