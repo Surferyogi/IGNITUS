@@ -330,7 +330,7 @@ function App(){
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ tickers }),
+        body: JSON.stringify({ tickers, holdings: sorted.slice(0,25).map(h=>({ticker:h.ticker,mkt:h.mkt})) }),
       });
 
       if (!res.ok) {
