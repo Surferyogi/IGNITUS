@@ -329,7 +329,6 @@ function App(){
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer sb_publishable_y-wyxLIPM0eiQOezFH6UYQ_WEJzxLGz',
         },
         body: JSON.stringify({ tickers }),
       });
