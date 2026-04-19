@@ -346,6 +346,8 @@ function MktSelector({mktFilter,setMktFilter,holdings}){
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 function App(){
+  // IGNITUS VERSION: v2026.04.19-02 (SENATE_MASTER removed, prices throttled)
+  useEffect(()=>{console.log("IGNITUS v2026.04.19-02 LOADED");},[]);
   const [tab,setTab]=useState("portfolio");
   const [holdings,setHoldings]=useState(ALL_H);
   const [trades,setTrades]=useState(ALL_T);
