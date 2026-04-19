@@ -374,6 +374,9 @@ function App(){
   const [senateHistPrices,setSenateHistPrices]=useState({}); // {TICKER_DATE: price} historical
   const [senateLoading,setSenateLoading]=useState(false);
   const [senateUpdating,setSenateUpdating]=useState(false);
+  const [liveIndices,setLiveIndices]=useState({}); // live index values from Yahoo
+  const [valuations,setValuations]=useState({});   // {TICKER: {analystTarget, dcf, graham, peFair, average, recommendation}}
+  const [valLoading,setValLoading]=useState({});
 
   // ── DB persistence ────────────────────────────────────────────────────────────
   const [dbStatus,setDbStatus]=useState('ready'); // 'ready' | 'saving' | 'saved' | 'error'
@@ -406,6 +409,7 @@ function App(){
         // Fetch live prices and FX rates after data loads
         fetchLivePrices(data.holdings);
         fetchLiveFx();
+        fetchLiveIndices();
         fetchSenateTrades();
         // Auto-fetch senate from Quiver (pass holdings directly to avoid stale closure)
         updateSenateDataSilent(data.holdings);
@@ -493,6 +497,41 @@ function App(){
       console.warn("FX fetch failed:",e.message);
     }
   }
+
+  async function fetchLiveIndices(){
+    try{
+      const res=await fetch('https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'live_indices'}),
+      });
+      if(!res.ok) return;
+      const d=await res.json();
+      if(d.indices){
+        setLiveIndices(d.indices);
+        console.log('Live indices fetched:',Object.keys(d.indices).length);
+      }
+    }catch(e){console.warn('fetchLiveIndices:',e.message);}
+  }
+
+  async function fetchValuation(ticker){
+    if(!ticker) return;
+    if(valuations[ticker]||valLoading[ticker]) return;
+    setValLoading(p=>({...p,[ticker]:true}));
+    try{
+      const res=await fetch('https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'valuation',ticker}),
+      });
+      if(!res.ok){setValLoading(p=>({...p,[ticker]:false}));return;}
+      const d=await res.json();
+      if(d&&!d.error){
+        setValuations(p=>({...p,[ticker]:d}));
+        console.log('Valuation',ticker+':',d.valuations);
+      }
+    }catch(e){console.warn('fetchValuation:',e.message);}
+    setValLoading(p=>({...p,[ticker]:false}));
+  }
+
 
   // ── Live Senate trades — fetched on app open ──────────────────────────────
   async function fetchSenateTrades(){
@@ -1397,6 +1436,9 @@ function App(){
   // ── Indices tab ──────────────────────────────────────────────────────────────
   function IndexView(){
     const mktsInPort=[...new Set(holdings.map(h=>h.mkt))];
+    // Map markets to live index keys
+    const IDX_KEY={US:"US_SP500",SG:"SG_STI",JP:"JP_NIKKEI",CN:"CN_HSI",EU:"EU_CAC",GB:"GB_FTSE",AU:"AU_ASX"};
+    const liveFor=(mkt)=>liveIndices[IDX_KEY[mkt]]||null;
     return(
       <>
         <div style={{...cardT,paddingLeft:0}}>Your Markets vs Benchmarks</div>
@@ -1406,20 +1448,35 @@ function App(){
           const portCost=holdings.filter(h=>h.mkt===mkt).reduce((s,h)=>s+toSGDlive(h.avgCost*h.shares,h.mkt),0);
           const portVal=holdings.filter(h=>h.mkt===mkt).reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0);
           const portPct=portCost?(portVal-portCost)/portCost*100:0;
-          const beat=portPct>m.idxYtd;
+          const lvIdx=liveFor(mkt);
+          const idxYtdLive=lvIdx?.ytd??m.idxYtd;
+          const beat=portPct>idxYtdLive;
           return(
             <div key={mkt} style={{...card,borderLeft:`3px solid ${beat?C.green:C.mutedLight}`}}>
               <div style={{...row,marginBottom:8}}>
                 <div>
                   <div style={{fontWeight:700,fontSize:14,display:"flex",alignItems:"center",gap:6,marginBottom:4}}>{m.index}<Chip mkt={mkt}/></div>
                   <div style={{display:"flex",gap:5}}>
-                    <Tag col={m.idxYtd>=0?C.green:C.red}>Index YTD {m.idxYtd>=0?"+":""}{m.idxYtd}%</Tag>
+                    <Tag col={idxYtdLive>=0?C.green:C.red}>Index YTD {idxYtdLive>=0?"+":""}{fmt(idxYtdLive,1)}%</Tag>
                     <Tag col={beat?C.green:C.red}>{beat?"Outperforming":"Underperforming"}</Tag>
                   </div>
                 </div>
                 <div style={{textAlign:"right"}}>
-                  <div style={{fontSize:15,fontWeight:800}}>{m.symbol}{fmt(m.idxVal,1)}</div>
-                  <div style={{fontSize:11,color:m.idxChange>=0?C.green:C.red,fontWeight:600}}>{m.idxChange>=0?"+":""}{m.idxChange}% today</div>
+                  {(()=>{
+                    const lv=liveFor(mkt);
+                    const val=lv?.price||m.idxVal;
+                    const chg=lv?.change??m.idxChange;
+                    const isLive=!!lv;
+                    return(
+                      <>
+                        <div style={{fontSize:15,fontWeight:800}}>
+                          {m.symbol}{fmt(val,1)}
+                          {isLive&&<span style={{fontSize:8,color:C.green,fontWeight:700,marginLeft:4}}>● LIVE</span>}
+                        </div>
+                        <div style={{fontSize:11,color:chg>=0?C.green:C.red,fontWeight:600}}>{chg>=0?"+":""}{fmt(chg,2)}% today</div>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
               <div style={{background:C.surface,borderRadius:8,padding:"8px 10px"}}>
@@ -1430,8 +1487,8 @@ function App(){
                 </div>
                 <div style={{display:"flex",gap:4,alignItems:"center",marginBottom:6}}>
                   <span style={{fontSize:9,color:C.muted,width:48}}>Index</span>
-                  <div style={{flex:1,height:5,borderRadius:2,background:C.border,overflow:"hidden"}}><div style={{width:`${Math.min(Math.abs(m.idxYtd)/35*100,100)}%`,height:"100%",background:m.idxYtd>=0?C.accent:C.red,opacity:0.5,borderRadius:2}}/></div>
-                  <span style={{fontSize:9,fontWeight:700,color:C.mutedLight,width:40,textAlign:"right"}}>{m.idxYtd>=0?"+":""}{m.idxYtd}%</span>
+                  <div style={{flex:1,height:5,borderRadius:2,background:C.border,overflow:"hidden"}}><div style={{width:`${Math.min(Math.abs(idxYtdLive)/35*100,100)}%`,height:"100%",background:m.idxYtd>=0?C.accent:C.red,opacity:0.5,borderRadius:2}}/></div>
+                  <span style={{fontSize:9,fontWeight:700,color:C.mutedLight,width:40,textAlign:"right"}}>{idxYtdLive>=0?"+":""}{fmt(idxYtdLive,1)}%</span>
                 </div>
                 <div style={{...row,fontSize:10}}><span style={{color:C.muted}}>{cnt} stocks</span><span style={{fontWeight:700}}>{fmtS(portVal)}</span></div>
               </div>
@@ -1913,6 +1970,7 @@ function App(){
     useEffect(()=>{
       if(!h)return;
       fetchRealHistory(h.ticker,h.mkt,detailPeriod);
+      if(h.mkt==="US") fetchValuation(h.ticker); // multi-source valuation only for US stocks (Finnhub coverage)
     },[h?.ticker,detailPeriod]);
     const m=MKT[h.mkt]||MKT.US,sc=scoreH(h),r=getRec(h),bs=buffettScore(h);
     const gainPct=((h.price-h.avgCost)/h.avgCost)*100,upside=((h.intrinsic-h.price)/h.price)*100;
@@ -2016,6 +2074,87 @@ function App(){
               </div>
             </div>
           </div>
+
+          {/* Multi-Source Valuation Panel — US stocks only */}
+          {h.mkt==="US"&&(()=>{
+            const v=valuations[h.ticker];
+            const loading=valLoading[h.ticker];
+            if(loading&&!v) return(
+              <div style={{...card,background:C.purple+"0A",border:`1px solid ${C.purple}30`}}>
+                <div style={{fontSize:11,color:C.purple,textAlign:"center",padding:"12px 0"}}>↻ Fetching valuations from Wall Street analysts...</div>
+              </div>
+            );
+            if(!v) return null;
+            const vals=v.valuations||{};
+            const rec=v.recommendation||{};
+            const inp=v.inputs||{};
+            const avail=v.dataAvailability||{};
+            const priceLive=v.currentPrice||h.price;
+            const growthUsed=inp.growthUsed||5;
+            const sources=[
+              {label:"Your Input",val:h.intrinsic,note:"Manual entry"},
+              {label:"Analyst Target",val:vals.analystTarget,note:vals.numAnalysts>0?(vals.numAnalysts+" analysts · $"+fmt(vals.analystLow)+"–$"+fmt(vals.analystHigh)):"premium endpoint"},
+              {label:"DCF Model",val:vals.dcf,note:growthUsed+"% growth, 10% disc."},
+              {label:"Graham Number",val:vals.graham,note:"Benjamin Graham formula"},
+              {label:"PE × 18 Fair",val:vals.peFair,note:"EPS × 18x industry"},
+            ].filter(s=>s.val>0);
+            if(sources.length===0){
+              return(
+                <div style={{...card,background:C.gold+"0A",border:`1px solid ${C.gold}40`}}>
+                  <div style={{fontSize:10,color:C.gold,fontWeight:700,marginBottom:4}}>MULTI-SOURCE VALUATION</div>
+                  <div style={{fontSize:11,color:C.mutedLight}}>
+                    Unable to compute valuations for {h.ticker}. Finnhub free tier doesn't expose enough financial data for this ticker. Your manual intrinsic value of <b>{fmtL(h.intrinsic,h.mkt)}</b> is the only reference available.
+                  </div>
+                </div>
+              );
+            }
+            const avg=sources.reduce((sum,s)=>sum+s.val,0)/Math.max(sources.length,1);
+            const avgUpside=priceLive>0?((avg-priceLive)/priceLive*100):0;
+            const recText=rec.score>=0.7?"Strong Buy":rec.score>=0.3?"Buy":rec.score>=-0.3?"Hold":rec.score>=-0.7?"Sell":"Strong Sell";
+            const recCol=rec.score>=0.3?C.green:rec.score>=-0.3?C.gold:C.red;
+            // Check if some sources are missing (premium-gated)
+            const missingAnalyst=!avail.analystTargetAvailable;
+            const missingDCF=!avail.dcfAvailable;
+            return(
+              <div style={{...card,background:C.purple+"0A",border:`1px solid ${C.purple}40`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <div style={{fontSize:10,color:C.purple,fontWeight:700,letterSpacing:"0.08em"}}>MULTI-SOURCE VALUATION</div>
+                  {rec.totalAnalysts>0&&<span style={{fontSize:9,fontWeight:700,padding:"2px 8px",borderRadius:4,background:recCol+"22",color:recCol}}>{recText} ({rec.totalAnalysts} analysts)</span>}
+                </div>
+                <div style={{fontSize:10,color:C.mutedLight,marginBottom:10}}>
+                  Current: <b style={{color:C.text}}>${fmt(priceLive)}</b> · EPS ${fmt(inp.eps)} · FCF/sh ${fmt(inp.fcfPerShare)} · PE {fmt(inp.pe,1)}x
+                </div>
+
+                {/* Valuation sources */}
+                {sources.map((s,i)=>{
+                  const upside=priceLive>0?((s.val-priceLive)/priceLive*100):0;
+                  const col=upside>=15?C.green:upside>=0?C.gold:C.red;
+                  return(
+                    <div key={s.label} style={{display:"grid",gridTemplateColumns:"1.2fr 0.8fr 0.8fr 1.2fr",gap:6,fontSize:11,marginBottom:6,paddingBottom:6,borderBottom:i<sources.length-1?`1px solid ${C.border}`:"none"}}>
+                      <div style={{fontWeight:700,color:C.text}}>{s.label}</div>
+                      <div style={{fontWeight:700,textAlign:"right"}}>${fmt(s.val)}</div>
+                      <div style={{fontWeight:700,textAlign:"right",color:col}}>{upside>=0?"+":""}{fmt(upside,1)}%</div>
+                      <div style={{fontSize:9,color:C.muted,textAlign:"right"}}>{s.note}</div>
+                    </div>
+                  );
+                })}
+
+                {/* Average row */}
+                <div style={{display:"grid",gridTemplateColumns:"1.2fr 0.8fr 0.8fr 1.2fr",gap:6,fontSize:12,marginTop:8,paddingTop:8,borderTop:`2px solid ${C.purple}44`}}>
+                  <div style={{fontWeight:800,color:C.purple}}>AVERAGE</div>
+                  <div style={{fontWeight:800,textAlign:"right",color:C.purple}}>${fmt(avg)}</div>
+                  <div style={{fontWeight:800,textAlign:"right",color:avgUpside>=0?C.green:C.red}}>{avgUpside>=0?"+":""}{fmt(avgUpside,1)}%</div>
+                  <div style={{fontSize:9,color:C.muted,textAlign:"right"}}>{sources.length} sources</div>
+                </div>
+
+                {/* Disclaimer */}
+                <div style={{fontSize:9,color:C.mutedLight,marginTop:10,paddingTop:8,borderTop:`1px solid ${C.border}`,lineHeight:1.5}}>
+                  <b style={{color:C.gold}}>Caveats:</b> DCF uses {growthUsed}% growth / 10% discount / 2.5% terminal — adjust mentally for hypergrowth (NVDA) or distressed stocks. Graham works best for established value stocks, not tech. Analyst targets are anchored to recent prices. <b>Treat the spread as your margin of safety range, not a prediction.</b>
+                  {(missingAnalyst||missingDCF)&&<><br/><b style={{color:C.red}}>Missing:</b> {missingAnalyst?"Wall St analyst target (Finnhub premium). ":""}{missingDCF?"DCF needs Free Cash Flow data (may be premium). ":""}</>}
+                </div>
+              </div>
+            );
+          })()}
 
           {buyHist.length>0&&(
             <div style={card}>
