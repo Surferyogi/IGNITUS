@@ -344,6 +344,30 @@ function MktSelector({mktFilter,setMktFilter,holdings}){
   );
 }
 
+// ─── Error Boundary: displays errors instead of black-screen ──────────────────
+class ErrBoundary extends React.Component {
+  constructor(p){ super(p); this.state = {err: null}; }
+  static getDerivedStateFromError(err){ return {err}; }
+  componentDidCatch(err, info){ console.error("ErrBoundary:", err, info); }
+  render(){
+    if(this.state.err){
+      return React.createElement("div", {
+        style: {padding:20, margin:20, background:"#2a0a0a", border:"2px solid #ef4444",
+                borderRadius:8, color:"#fca5a5", fontFamily:"monospace", fontSize:11}
+      },
+        React.createElement("div", {style:{color:"#ef4444",fontWeight:700,marginBottom:8}}, "Modal render error:"),
+        React.createElement("div", null, String(this.state.err?.message || this.state.err)),
+        React.createElement("button", {
+          onClick: () => this.setState({err: null}),
+          style: {marginTop:10, padding:"5px 12px", background:"#ef4444", color:"white",
+                  border:"none", borderRadius:5, cursor:"pointer"}
+        }, "Close")
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 function App(){
   const [tab,setTab]=useState("portfolio");
@@ -616,8 +640,8 @@ function App(){
       if(res.ok){const d=await res.json();if(d.trades?.length>0)trades=d.trades;}
       if(trades.length===0){console.log('Senate auto: Quiver returned no data, keeping existing Supabase data');return;}
 
-      // 2. Save to Supabase
-      await fetch(SB+'/rest/v1/senate',{method:'DELETE',headers:{...SBH,'Prefer':'return=minimal'}});
+      // 2. Save to Supabase — DELETE requires a filter (Supabase safety), use date filter to match all rows
+      await fetch(SB+'/rest/v1/senate?date=not.is.null',{method:'DELETE',headers:{...SBH,'Prefer':'return=minimal'}});
       for(const t of trades){
         await fetch(SB+'/rest/v1/senate',{method:'POST',headers:{...SBH,'Prefer':'return=minimal'},
           body:JSON.stringify({name:t.name,party:t.party,ticker:t.ticker,action:t.action,
@@ -2464,7 +2488,7 @@ function App(){
         </div>
       )}
 
-      {sel&&<HoldingDetail/>}
+      {sel&&<ErrBoundary><HoldingDetail/></ErrBoundary>}
       {holdingEditId!=null&&<EditHoldingModal/>}
       {deleteConfirm!=null&&<DeleteConfirmModal/>}
     </div>
