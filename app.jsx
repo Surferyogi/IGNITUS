@@ -399,6 +399,8 @@ function App(){
   const [senateLoading,setSenateLoading]=useState(false);
   const [senateUpdating,setSenateUpdating]=useState(false);
   const [liveIndices,setLiveIndices]=useState({}); // live index values from Yahoo
+  const [indicesSource,setIndicesSource]=useState('fallback'); // 'live'|'cached'|'fallback'
+  const [indicesCachedAt,setIndicesCachedAt]=useState(null);  // ISO string of last successful live fetch
   const [valuations,setValuations]=useState({});   // {TICKER: {analystTarget, dcf, graham, peFair, average, recommendation}}
   const [valLoading,setValLoading]=useState({});
 
@@ -528,18 +530,56 @@ function App(){
   }
 
   async function fetchLiveIndices(){
+    const SB='https://ckyshjxznltdkxfvhfdy.supabase.co';
+    const KEY='sb_publishable_y-wyxLIPM0eiQOezFH6UYQ_WEJzxLGz';
+    const SBH={'Content-Type':'application/json','apikey':KEY,'Authorization':'Bearer '+KEY};
+    const CACHE_KEY='indices_lkg';
+
+    // ── Layer 1: Live from Yahoo Finance via Edge Function ────────────────────
     try{
-      const res=await fetch('https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api',{
+      const res=await fetch(SB+'/functions/v1/smart-api',{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({action:'live_indices'}),
       });
-      if(!res.ok) return;
-      const d=await res.json();
-      if(d.indices){
-        setLiveIndices(d.indices);
-        console.log('Live indices fetched:',Object.keys(d.indices).length);
+      if(res.ok){
+        const d=await res.json();
+        if(d.indices&&Object.keys(d.indices).length>0){
+          setLiveIndices(d.indices);
+          setIndicesSource('live');
+          setIndicesCachedAt(null);
+          console.log('Live indices fetched:',Object.keys(d.indices).length);
+          // Fire-and-forget: write LKG cache to meta table
+          fetch(SB+'/rest/v1/meta?on_conflict=key',{
+            method:'POST',
+            headers:{...SBH,'Prefer':'resolution=merge-duplicates,return=minimal'},
+            body:JSON.stringify({key:CACHE_KEY,value:JSON.stringify({indices:d.indices,updatedAt:new Date().toISOString()})}),
+          }).catch(()=>{});
+          return;
+        }
       }
-    }catch(e){console.warn('fetchLiveIndices:',e.message);}
+    }catch(e){console.warn('fetchLiveIndices live failed:',e.message);}
+
+    // ── Layer 2: LKG cache from Supabase meta table ───────────────────────────
+    try{
+      const res=await fetch(SB+'/rest/v1/meta?key=eq.'+CACHE_KEY,{headers:SBH});
+      if(res.ok){
+        const rows=await res.json();
+        if(rows.length>0){
+          const cached=JSON.parse(rows[0].value||'{}');
+          if(cached.indices&&cached.updatedAt){
+            setLiveIndices(cached.indices);
+            setIndicesSource('cached');
+            setIndicesCachedAt(cached.updatedAt);
+            console.log('Live indices from LKG cache:',cached.updatedAt);
+            return;
+          }
+        }
+      }
+    }catch(e){console.warn('fetchLiveIndices cache failed:',e.message);}
+
+    // ── Layer 3: Hardcoded MKT object (liveIndices stays {}) ─────────────────
+    setIndicesSource('fallback');
+    console.warn('Live indices: using hardcoded MKT fallback');
   }
 
   async function fetchValuation(ticker){
@@ -1425,6 +1465,18 @@ function App(){
     // Map markets to live index keys
     const IDX_KEY={US:"US_SP500",SG:"SG_STI",JP:"JP_NIKKEI",CN:"CN_HSI",EU:"EU_CAC",GB:"GB_FTSE",AU:"AU_ASX"};
     const liveFor=(mkt)=>liveIndices[IDX_KEY[mkt]]||null;
+    // Compute source badge label once for the whole Markets tab
+    const srcAge=indicesCachedAt?(()=>{
+      const diffMs=Date.now()-new Date(indicesCachedAt).getTime();
+      const h=Math.floor(diffMs/3600000);
+      const mn=Math.floor((diffMs%3600000)/60000);
+      return h>0?h+'h ago':mn+'m ago';
+    })():null;
+    const srcBadge=indicesSource==='live'
+      ?{label:'● LIVE',color:C.green}
+      :indicesSource==='cached'
+      ?{label:'⧗ cached '+(srcAge||''),color:C.gold}
+      :{label:'⚠ fallback',color:C.red};
     return(
       <>
         <div style={{...cardT,paddingLeft:0}}>Your Markets vs Benchmarks</div>
@@ -1452,12 +1504,11 @@ function App(){
                     const lv=liveFor(mkt);
                     const val=lv?.price||m.idxVal;
                     const chg=lv?.change??m.idxChange;
-                    const isLive=!!lv;
                     return(
                       <>
                         <div style={{fontSize:15,fontWeight:800}}>
                           {m.symbol}{fmt(val,1)}
-                          {isLive&&<span style={{fontSize:8,color:C.green,fontWeight:700,marginLeft:4}}>● LIVE</span>}
+                          <span style={{fontSize:8,color:srcBadge.color,fontWeight:700,marginLeft:4}}>{srcBadge.label}</span>
                         </div>
                         <div style={{fontSize:11,color:chg>=0?C.green:C.red,fontWeight:600}}>{chg>=0?"+":""}{fmt(chg,2)}% today</div>
                       </>
