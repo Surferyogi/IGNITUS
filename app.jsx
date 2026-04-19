@@ -2140,11 +2140,14 @@ function App(){
             const growthUsed=inp.growthUsed||5;
             const growthSrc=inp.growthSource||'default 5%';
 
-            // All 4 model sources — always show, with N/A indicator if unavailable
+            // All 5 model sources — always show, with N/A indicator if unavailable
             const allSources=[
               {label:"Analyst Target",  val:vals.analystTarget, ok:!!(avail.analystTargetAvailable&&vals.analystTarget>0),
                note:vals.numAnalysts>0?(vals.numAnalysts+" analysts · $"+fmt(vals.analystLow)+"–$"+fmt(vals.analystHigh)):"",
                na:"🔒 Requires Finnhub premium"},
+              {label:"FMP DCF",         val:vals.fmpDcf,        ok:!!(avail.fmpDcfAvailable&&vals.fmpDcf>0),
+               note:"FMP pre-computed DCF (free API)",
+               na:"📂 No DCF data from FMP for this ticker"},
               {label:"DCF (FCF-based)", val:vals.dcfFCF,        ok:!!(avail.dcfFCFAvailable&&vals.dcfFCF>0),
                note:"FCF/sh × "+growthUsed+"% growth · 10% disc.",
                na:"📂 No Free Cash Flow data"},
@@ -2204,7 +2207,7 @@ function App(){
                     <div style={{fontWeight:800,color:C.purple}}>AVERAGE</div>
                     <div style={{fontWeight:800,textAlign:"right",color:C.purple}}>${fmt(computedAvg)}</div>
                     <div style={{fontWeight:800,textAlign:"right",color:avgUpside>=0?C.green:C.red}}>{avgUpside>=0?"+":""}{fmt(avgUpside,1)}%</div>
-                    <div style={{fontSize:9,color:C.muted,textAlign:"right"}}>{availCount} of 4 models</div>
+                    <div style={{fontSize:9,color:C.muted,textAlign:"right"}}>{availCount} of 5 models</div>
                   </div>
                 ):(
                   <div style={{textAlign:"center",fontSize:10,color:C.muted,marginTop:10,padding:"8px",background:C.surface,borderRadius:6}}>
