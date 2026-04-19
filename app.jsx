@@ -545,13 +545,14 @@ function App(){
   }
 
   async function fetchSenatePrices(trades){
-    // Called after manual Update button — uses holdings state (already loaded by then)
+    // Throttled: fetch one ticker at a time with small delay to avoid Finnhub rate limits
     const FH='d7hji19r01qhiu0brkigd7hji19r01qhiu0brkj0';
     const portSet=new Set(holdings.map(h=>h.ticker));
     const missing=[...new Set((trades||[]).map(t=>t.ticker))].filter(tk=>tk&&tk.length<=6&&!portSet.has(tk));
     if(missing.length===0)return;
     const map={};
-    await Promise.allSettled(missing.map(async(tk)=>{
+    // Sequential fetch with 200ms gap — avoids slamming Finnhub when combined with portfolio price fetch
+    for(const tk of missing){
       try{
         const [qr,mr]=await Promise.all([
           fetch(`https://finnhub.io/api/v1/quote?symbol=${tk}&token=${FH}`),
@@ -566,10 +567,11 @@ function App(){
         const intrinsic=eps>0&&bvps>0?+Math.sqrt(22.5*eps*bvps).toFixed(2):0;
         if(price>0)map[tk]={price,intrinsic};
       }catch(e){}
-    }));
+      await new Promise(r=>setTimeout(r,200));
+    }
     if(Object.keys(map).length>0){
       setSenatePrices(p=>({...p,...map}));
-      console.log('Senate prices (manual):',Object.keys(map).join(', '));
+      console.log('Senate prices (throttled):',Object.keys(map).join(', '));
     }
   }
 
@@ -609,7 +611,7 @@ function App(){
         }
       }catch(e){console.warn('Quiver failed:',e.message);}
       // 2. Fall back to hardcoded master if Quiver failed
-      if(trades.length===0){trades=[...SENATE_MASTER];console.log('Using hardcoded master');}
+      if(trades.length===0){alert('⚠️ Quiver returned no data. Keeping existing senate data.');setSenateUpdating(false);return;}
       // 3. Save to Supabase
       await fetch(SB+'/rest/v1/senate',{method:'DELETE',headers:{...sbHeaders,'Prefer':'return=minimal'}});
       let ok=0;
