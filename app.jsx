@@ -379,6 +379,7 @@ function App(){
   const [detailPeriod,setDetailPeriod]=useState("6m");
   const [groupBy,setGroupBy]=useState("sector");
   const [search,setSearch]=useState("");
+  const searchInputRef=React.useRef(null); // preserve focus across re-renders
   const [tradeType,setTradeType]=useState("ALL");
   const [insightTab,setInsightTab]=useState("performers");
   const [aiText,setAiText]=useState({});
@@ -1178,14 +1179,40 @@ function App(){
             </div>
           </div>
         </div>
-        <input style={{...inp,marginBottom:10}} placeholder={`Search ${filtered.length} holdings...`} value={search} onChange={e=>setSearch(e.target.value)}/>
+        <div style={{position:"relative",marginBottom:10}}>
+          <input
+            ref={searchInputRef}
+            style={{...inp,paddingRight:search?32:12,marginBottom:0}}
+            placeholder={`Search ${filtered.length} holdings...`}
+            value={search}
+            onChange={e=>{
+              setSearch(e.target.value);
+              // PortfolioView is defined inside App so re-render can lose focus —
+              // use rAF to restore it after React reconciliation completes
+              requestAnimationFrame(()=>{
+                if(searchInputRef.current) searchInputRef.current.focus();
+              });
+            }}
+          />
+          {search&&(
+            <button
+              onClick={()=>setSearch("")}
+              style={{position:"absolute",right:6,top:"50%",transform:"translateY(-50%)",
+                background:"none",border:"none",color:C.muted,fontSize:15,cursor:"pointer",
+                lineHeight:1,padding:"0 4px",display:"flex",alignItems:"center"}}
+            >✕</button>
+          )}
+        </div>
         <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10}}>{filtered.length} Holdings{mktFilter!=="ALL"?` · ${mktFilter}`:""}</div>
         {filtered.map(h=>{
           const localVal=h.price*h.shares,localCost=h.avgCost*h.shares,localGain=localVal-localCost;
           const gainPct=((h.price-h.avgCost)/h.avgCost)*100;
-          const upside=((h.intrinsic-h.price)/h.price)*100;
+          const compIV=valuations[h.ticker]?.valuations?.average||0;
+          const effIV=compIV>0?compIV:h.intrinsic;
+          const upside=effIV>0&&h.price>0?((effIV-h.price)/h.price)*100:0;
           const sgdVal=toSGDlive(localVal,h.mkt),sgdGain=toSGDlive(localGain,h.mkt);
-          const w=wt(h),pos=gainPct>=0,sc=scoreH(h),r=getRec(h);
+          const hScored={...h,intrinsic:effIV};
+          const w=wt(h),pos=gainPct>=0,sc=scoreH(hScored),r=getRec(hScored);
           const sCol=SCOL[SECTORS.indexOf(h.sector)%SCOL.length];
           return(
             <div key={h.id} style={{...card,cursor:"pointer"}} onClick={()=>{setSel(h);setDetailPeriod("6m");}}>
@@ -1202,7 +1229,7 @@ function App(){
                     <span style={{color:C.muted,fontWeight:400}}> ({fmtS(toSGDlive(h.avgCost,h.mkt))})</span>
                   </div>
                   <div style={{fontSize:10,color:C.mutedLight,marginTop:1}}>
-                    Intrinsic: <b style={{color:upside>=0?C.green:C.red}}>{fmtL(h.intrinsic,h.mkt)}</b>
+                    Intrinsic: <b style={{color:upside>=0?C.green:C.red}}>{fmtL(effIV,h.mkt)}</b>{compIV>0&&<span style={{color:C.purple,fontSize:8,fontWeight:700,marginLeft:3}}>●</span>}
                     <span style={{color:C.muted,fontWeight:400}}> {upside>=0?"+":""}{fmt(upside,1)}% upside</span>
                   </div>
                 </div>
@@ -1258,7 +1285,8 @@ function App(){
               {top10.map((h,i)=>{
                 const g=((h.price-h.avgCost)/h.avgCost)*100;
                 const lg=(h.price-h.avgCost)*h.shares;
-                const up=((h.intrinsic-h.price)/h.price)*100;
+                const eIV=(valuations[h.ticker]?.valuations?.average)||h.intrinsic||0;
+                const up=eIV>0?((eIV-h.price)/h.price)*100:0;
                 return(
                   <div key={h.ticker} style={{marginBottom:10,paddingBottom:10,borderBottom:i<9?`1px solid ${C.border}`:"none",cursor:"pointer"}} onClick={()=>{setSel(h);setDetailPeriod("6m");}}>
                     <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -1276,7 +1304,7 @@ function App(){
                     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,marginTop:6,background:C.surface,borderRadius:6,padding:"5px 8px"}}>
                       <div><div style={{fontSize:8,color:C.muted}}>Price</div><div style={{fontSize:11,fontWeight:700}}>{fmtL(h.price,h.mkt)}</div></div>
                       <div><div style={{fontSize:8,color:C.muted}}>Avg Cost</div><div style={{fontSize:11,fontWeight:700,color:C.mutedLight}}>{fmtL(h.avgCost,h.mkt)}</div></div>
-                      <div style={{textAlign:"right"}}><div style={{fontSize:8,color:C.muted}}>Intrinsic</div><div style={{fontSize:11,fontWeight:700,color:up>=0?C.green:C.red}}>{fmtL(h.intrinsic,h.mkt)}</div></div>
+                      <div style={{textAlign:"right"}}><div style={{fontSize:8,color:C.muted}}>Intrinsic{valuations[h.ticker]?.valuations?.average>0&&<span style={{color:C.purple,fontSize:7,marginLeft:2}}>●</span>}</div><div style={{fontSize:11,fontWeight:700,color:up>=0?C.green:C.red}}>{eIV>0?fmtL(eIV,h.mkt):"—"}</div></div>
                     </div>
                   </div>
                 );
@@ -1288,7 +1316,8 @@ function App(){
                 const g=((h.price-h.avgCost)/h.avgCost)*100;
                 const lg=(h.price-h.avgCost)*h.shares;
                 const pos=lg>=0;
-                const up=((h.intrinsic-h.price)/h.price)*100;
+                const eIV2=(valuations[h.ticker]?.valuations?.average)||h.intrinsic||0;
+                const up=eIV2>0?((eIV2-h.price)/h.price)*100:0;
                 return(
                   <div key={h.ticker} style={{marginBottom:10,paddingBottom:10,borderBottom:i<9?`1px solid ${C.border}`:"none",cursor:"pointer"}} onClick={()=>{setSel(h);setDetailPeriod("6m");}}>
                     <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -1306,7 +1335,7 @@ function App(){
                     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,marginTop:6,background:C.surface,borderRadius:6,padding:"5px 8px"}}>
                       <div><div style={{fontSize:8,color:C.muted}}>Price</div><div style={{fontSize:11,fontWeight:700}}>{fmtL(h.price,h.mkt)}</div></div>
                       <div><div style={{fontSize:8,color:C.muted}}>Avg Cost</div><div style={{fontSize:11,fontWeight:700,color:C.mutedLight}}>{fmtL(h.avgCost,h.mkt)}</div></div>
-                      <div style={{textAlign:"right"}}><div style={{fontSize:8,color:C.muted}}>Intrinsic</div><div style={{fontSize:11,fontWeight:700,color:up>=0?C.green:C.red}}>{fmtL(h.intrinsic,h.mkt)}</div></div>
+                      <div style={{textAlign:"right"}}><div style={{fontSize:8,color:C.muted}}>Intrinsic{valuations[h.ticker]?.valuations?.average>0&&<span style={{color:C.purple,fontSize:7,marginLeft:2}}>●</span>}</div><div style={{fontSize:11,fontWeight:700,color:up>=0?C.green:C.red}}>{eIV2>0?fmtL(eIV2,h.mkt):"—"}</div></div>
                     </div>
                   </div>
                 );
@@ -2140,11 +2169,8 @@ function App(){
             const growthUsed=inp.growthUsed||5;
             const growthSrc=inp.growthSource||'default 5%';
 
-            // All 5 model sources — always show, with N/A indicator if unavailable
+            // All 4 model sources — always show, with N/A indicator if unavailable
             const allSources=[
-              {label:"Analyst Target",  val:vals.analystTarget, ok:!!(avail.analystTargetAvailable&&vals.analystTarget>0),
-               note:vals.numAnalysts>0?(vals.numAnalysts+" analysts · $"+fmt(vals.analystLow)+"–$"+fmt(vals.analystHigh)):"",
-               na:"🔒 Requires Finnhub premium"},
               {label:"FMP DCF",         val:vals.fmpDcf,        ok:!!(avail.fmpDcfAvailable&&vals.fmpDcf>0),
                note:"FMP pre-computed DCF (free API)",
                na:"📂 No DCF data from FMP for this ticker"},
@@ -2171,11 +2197,26 @@ function App(){
                   <div style={{fontSize:10,color:C.purple,fontWeight:700,letterSpacing:"0.08em"}}>MULTI-SOURCE VALUATION</div>
                   {rec.totalAnalysts>0&&<span style={{fontSize:9,fontWeight:700,padding:"2px 8px",borderRadius:4,background:recCol+"22",color:recCol}}>{recText} ({rec.totalAnalysts} analysts)</span>}
                 </div>
-                <div style={{fontSize:10,color:C.mutedLight,marginBottom:10}}>
+                <div style={{fontSize:10,color:C.mutedLight,marginBottom:6}}>
                   Current: <b style={{color:C.text}}>${fmt(priceLive)}</b> · EPS ${fmt(inp.eps)} · FCF/sh ${fmt(inp.fcfPerShare)} · Growth <b style={{color:C.gold}}>{growthUsed}%</b> <span style={{color:C.muted}}>({growthSrc})</span>
                 </div>
+                {/* Column headers */}
+                <div style={{display:"grid",gridTemplateColumns:"1.2fr 0.8fr 0.8fr 1.2fr",gap:6,fontSize:8,color:C.muted,marginBottom:4,paddingBottom:4,borderBottom:`1px solid ${C.border}33`,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase"}}>
+                  <div>Model</div>
+                  <div style={{textAlign:"right"}}>Value</div>
+                  <div style={{textAlign:"right"}}>vs Price</div>
+                  <div style={{textAlign:"right"}}>Source</div>
+                </div>
 
-                {/* All 4 model rows — available ones in full, unavailable with creative N/A */}
+                {/* Column headers */}
+                <div style={{display:"grid",gridTemplateColumns:"1.2fr 0.8fr 0.8fr 1.2fr",gap:6,fontSize:8,marginBottom:6,paddingBottom:6,borderBottom:`1px solid ${C.border}`,color:C.muted,textTransform:"uppercase",letterSpacing:"0.06em"}}>
+                  <div>Model</div>
+                  <div style={{textAlign:"right"}}>Fair Value</div>
+                  <div style={{textAlign:"right"}}>vs Market</div>
+                  <div style={{textAlign:"right"}}>Method</div>
+                </div>
+
+                {/* Model rows — available ones full, unavailable with N/A */}
                 {allSources.map((s,i)=>{
                   if(s.ok){
                     const upside=priceLive>0?((s.val-priceLive)/priceLive*100):0;
@@ -2207,7 +2248,7 @@ function App(){
                     <div style={{fontWeight:800,color:C.purple}}>AVERAGE</div>
                     <div style={{fontWeight:800,textAlign:"right",color:C.purple}}>${fmt(computedAvg)}</div>
                     <div style={{fontWeight:800,textAlign:"right",color:avgUpside>=0?C.green:C.red}}>{avgUpside>=0?"+":""}{fmt(avgUpside,1)}%</div>
-                    <div style={{fontSize:9,color:C.muted,textAlign:"right"}}>{availCount} of 5 models</div>
+                    <div style={{fontSize:9,color:C.muted,textAlign:"right"}}>{availCount} of 4 models</div>
                   </div>
                 ):(
                   <div style={{textAlign:"center",fontSize:10,color:C.muted,marginTop:10,padding:"8px",background:C.surface,borderRadius:6}}>
@@ -2217,8 +2258,8 @@ function App(){
 
                 {/* Disclaimer */}
                 <div style={{fontSize:9,color:C.mutedLight,marginTop:10,paddingTop:8,borderTop:`1px solid ${C.border}`,lineHeight:1.5}}>
-                  <b style={{color:C.gold}}>How to read this:</b> Each model uses a different lens. <b>DCF (FCF)</b> values free cash generated. <b>DCF (EPS)</b> values reported earnings — historically correlates better with price. <b>Peter Lynch</b> says fair P/E = growth rate (PEG=1). <b>Analyst Target</b> is Wall St professional consensus. The AVERAGE is used for the Buffett score below. The wider the spread, the more uncertain — treat the range as your margin of safety.
-                  {availCount<4&&<><br/><span style={{color:C.gold}}>Strikethrough rows</span>: data unavailable on Finnhub free tier.</>}
+                  <b style={{color:C.gold}}>How to read this:</b> <b>vs Market</b> = how over/undervalued the stock is at today's price according to each model. Negative = overvalued (model says fair value is below market price); Positive = undervalued. <b>FMP DCF</b> is a professionally pre-computed DCF. <b>DCF (FCF/EPS)</b> use your growth rate from Finnhub. <b>Peter Lynch</b> says fair P/E = growth rate. The AVERAGE drives the Buffett score and the Intrinsic tile above.
+                  {availCount<4&&<><br/><span style={{color:C.gold}}>Strikethrough rows</span>: data unavailable on Finnhub/FMP free tier.</>}
                 </div>
               </div>
             );
