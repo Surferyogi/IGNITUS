@@ -2009,8 +2009,15 @@ function App(){
       fetchRealHistory(h.ticker,h.mkt,detailPeriod);
       if(h.mkt==="US") fetchValuation(h.ticker); // multi-source valuation only for US stocks (Finnhub coverage)
     },[h?.ticker,detailPeriod]);
-    const m=MKT[h.mkt]||MKT.US,sc=scoreH(h),r=getRec(h),bs=buffettScore(h);
-    const gainPct=((h.price-h.avgCost)/h.avgCost)*100,upside=((h.intrinsic-h.price)/h.price)*100;
+    const m=MKT[h.mkt]||MKT.US;
+    // Use computed average from valuation panel if available, otherwise fall back to h.intrinsic
+    const valData=valuations[h.ticker];
+    const computedIV=valData?.valuations?.average||0;
+    const effectiveIV=computedIV>0?computedIV:(h.intrinsic||0);
+    // Build a synthetic holding with effective intrinsic for scoring
+    const hScored={...h,intrinsic:effectiveIV};
+    const sc=scoreH(hScored),r=getRec(hScored),bs=buffettScore(hScored);
+    const gainPct=((h.price-h.avgCost)/h.avgCost)*100,upside=((effectiveIV-h.price)/h.price)*100;
     const localVal=h.price*h.shares,localCost=h.avgCost*h.shares,localGain=localVal-localCost,localDiv=(h.divYield/100)*localVal;
     const sgdVal=toSGDlive(localVal,h.mkt),sgdCost=toSGDlive(localCost,h.mkt),sgdGain=toSGDlive(localGain,h.mkt),sgdDiv=toSGDlive(localDiv,h.mkt);
     const w=wtTotal(h),pos=gainPct>=0;
@@ -2048,9 +2055,11 @@ function App(){
               <div style={{fontSize:9,color:pos?C.green:C.red,fontWeight:700}}>{fmtPct(gainPct)}</div>
             </div>
             <div style={{background:C.surface,borderRadius:9,padding:"10px 10px"}}>
-              <div style={{fontSize:9,color:C.muted,marginBottom:2}}>Intrinsic</div>
-              <div style={{fontSize:15,fontWeight:800}}>{fmtL(h.intrinsic,h.mkt)}</div>
-              <div style={{fontSize:9,color:upside>=0?C.green:C.red,fontWeight:700}}>{upside>=0?"+":""}{fmt(upside,1)}%</div>
+              <div style={{fontSize:9,color:C.muted,marginBottom:2}}>
+                Intrinsic {computedIV>0&&<span style={{color:C.purple,fontSize:8,fontWeight:700}}>● calc</span>}
+              </div>
+              <div style={{fontSize:15,fontWeight:800}}>{effectiveIV>0?fmtL(effectiveIV,h.mkt):"—"}</div>
+              <div style={{fontSize:9,color:upside>=0?C.green:C.red,fontWeight:700}}>{effectiveIV>0?((upside>=0?"+":"")+fmt(upside,1)+"%"):"no data"}</div>
             </div>
           </div>
 
@@ -2130,25 +2139,27 @@ function App(){
             const priceLive=v.currentPrice||h.price;
             const growthUsed=inp.growthUsed||5;
             const growthSrc=inp.growthSource||'default 5%';
-            const sources=[
-              {label:"Your Input",       val:h.intrinsic,          note:"Manual entry"},
-              {label:"Analyst Target",   val:vals.analystTarget,   note:vals.numAnalysts>0?(vals.numAnalysts+" analysts · $"+fmt(vals.analystLow)+"–$"+fmt(vals.analystHigh)):"premium endpoint"},
-              {label:"DCF (FCF-based)",  val:vals.dcfFCF,          note:"FCF/sh × "+growthUsed+"% growth · 10% disc."},
-              {label:"DCF (EPS-based)",  val:vals.dcfEPS,          note:"EPS × "+growthUsed+"% growth · 10% disc."},
-              {label:"Peter Lynch",      val:vals.peterLynch,      note:"EPS × "+growthUsed+"% = PEG 1.0"},
-            ].filter(s=>s.val>0);
-            if(sources.length===0){
-              return(
-                <div style={{...card,background:C.gold+"0A",border:`1px solid ${C.gold}40`}}>
-                  <div style={{fontSize:10,color:C.gold,fontWeight:700,marginBottom:4}}>MULTI-SOURCE VALUATION</div>
-                  <div style={{fontSize:11,color:C.mutedLight}}>
-                    Unable to compute valuations for {h.ticker}. Finnhub free tier doesn't expose enough financial data for this ticker. Your manual intrinsic value of <b>{fmtL(h.intrinsic,h.mkt)}</b> is the only reference available.
-                  </div>
-                </div>
-              );
-            }
-            const avg=sources.reduce((sum,s)=>sum+s.val,0)/Math.max(sources.length,1);
-            const avgUpside=priceLive>0?((avg-priceLive)/priceLive*100):0;
+
+            // All 4 model sources — always show, with N/A indicator if unavailable
+            const allSources=[
+              {label:"Analyst Target",  val:vals.analystTarget, ok:!!(avail.analystTargetAvailable&&vals.analystTarget>0),
+               note:vals.numAnalysts>0?(vals.numAnalysts+" analysts · $"+fmt(vals.analystLow)+"–$"+fmt(vals.analystHigh)):"",
+               na:"🔒 Requires Finnhub premium"},
+              {label:"DCF (FCF-based)", val:vals.dcfFCF,        ok:!!(avail.dcfFCFAvailable&&vals.dcfFCF>0),
+               note:"FCF/sh × "+growthUsed+"% growth · 10% disc.",
+               na:"📂 No Free Cash Flow data"},
+              {label:"DCF (EPS-based)", val:vals.dcfEPS,        ok:!!(avail.dcfEPSAvailable&&vals.dcfEPS>0),
+               note:"EPS × "+growthUsed+"% growth · 10% disc.",
+               na:"📂 No EPS data from Finnhub"},
+              {label:"Peter Lynch",     val:vals.peterLynch,    ok:!!(avail.peterLynchAvailable&&vals.peterLynch>0),
+               note:"EPS × "+growthUsed+"% growth = PEG 1.0",
+               na:"📂 No EPS or growth data"},
+            ];
+            const availCount=allSources.filter(s=>s.ok).length;
+
+            // Average of available models only (no manual input)
+            const computedAvg=vals.average||0;
+            const avgUpside=priceLive>0&&computedAvg>0?((computedAvg-priceLive)/priceLive*100):0;
             const recText=rec.score>=0.7?"Strong Buy":rec.score>=0.3?"Buy":rec.score>=-0.3?"Hold":rec.score>=-0.7?"Sell":"Strong Sell";
             const recCol=rec.score>=0.3?C.green:rec.score>=-0.3?C.gold:C.red;
             return(
@@ -2161,33 +2172,50 @@ function App(){
                   Current: <b style={{color:C.text}}>${fmt(priceLive)}</b> · EPS ${fmt(inp.eps)} · FCF/sh ${fmt(inp.fcfPerShare)} · Growth <b style={{color:C.gold}}>{growthUsed}%</b> <span style={{color:C.muted}}>({growthSrc})</span>
                 </div>
 
-                {/* Valuation sources */}
-                {sources.map((s,i)=>{
-                  const upside=priceLive>0?((s.val-priceLive)/priceLive*100):0;
-                  const col=upside>=15?C.green:upside>=0?C.gold:C.red;
-                  return(
-                    <div key={s.label} style={{display:"grid",gridTemplateColumns:"1.2fr 0.8fr 0.8fr 1.2fr",gap:6,fontSize:11,marginBottom:6,paddingBottom:6,borderBottom:i<sources.length-1?`1px solid ${C.border}`:"none"}}>
-                      <div style={{fontWeight:700,color:C.text}}>{s.label}</div>
-                      <div style={{fontWeight:700,textAlign:"right"}}>${fmt(s.val)}</div>
-                      <div style={{fontWeight:700,textAlign:"right",color:col}}>{upside>=0?"+":""}{fmt(upside,1)}%</div>
-                      <div style={{fontSize:9,color:C.muted,textAlign:"right"}}>{s.note}</div>
-                    </div>
-                  );
+                {/* All 4 model rows — available ones in full, unavailable with creative N/A */}
+                {allSources.map((s,i)=>{
+                  if(s.ok){
+                    const upside=priceLive>0?((s.val-priceLive)/priceLive*100):0;
+                    const col=upside>=15?C.green:upside>=0?C.gold:C.red;
+                    return(
+                      <div key={s.label} style={{display:"grid",gridTemplateColumns:"1.2fr 0.8fr 0.8fr 1.2fr",gap:6,fontSize:11,marginBottom:6,paddingBottom:6,borderBottom:`1px solid ${C.border}`}}>
+                        <div style={{fontWeight:700,color:C.text}}>{s.label}</div>
+                        <div style={{fontWeight:700,textAlign:"right"}}>${fmt(s.val)}</div>
+                        <div style={{fontWeight:700,textAlign:"right",color:col}}>{upside>=0?"+":""}{fmt(upside,1)}%</div>
+                        <div style={{fontSize:9,color:C.muted,textAlign:"right"}}>{s.note}</div>
+                      </div>
+                    );
+                  } else {
+                    // Creative N/A row — dashed border, muted, shows reason
+                    return(
+                      <div key={s.label} style={{display:"grid",gridTemplateColumns:"1.2fr 0.8fr 0.8fr 1.2fr",gap:6,fontSize:11,marginBottom:6,paddingBottom:6,borderBottom:`1px dashed ${C.border}44`,opacity:0.55}}>
+                        <div style={{fontWeight:600,color:C.mutedLight,textDecoration:"line-through"}}>{s.label}</div>
+                        <div style={{textAlign:"right",color:C.muted,fontSize:13,letterSpacing:2}}>· · ·</div>
+                        <div style={{textAlign:"right",color:C.muted,fontSize:13,letterSpacing:2}}>· · ·</div>
+                        <div style={{fontSize:9,color:C.gold,textAlign:"right",fontStyle:"italic"}}>{s.na}</div>
+                      </div>
+                    );
+                  }
                 })}
 
                 {/* Average row */}
-                <div style={{display:"grid",gridTemplateColumns:"1.2fr 0.8fr 0.8fr 1.2fr",gap:6,fontSize:12,marginTop:8,paddingTop:8,borderTop:`2px solid ${C.purple}44`}}>
-                  <div style={{fontWeight:800,color:C.purple}}>AVERAGE</div>
-                  <div style={{fontWeight:800,textAlign:"right",color:C.purple}}>${fmt(avg)}</div>
-                  <div style={{fontWeight:800,textAlign:"right",color:avgUpside>=0?C.green:C.red}}>{avgUpside>=0?"+":""}{fmt(avgUpside,1)}%</div>
-                  <div style={{fontSize:9,color:C.muted,textAlign:"right"}}>{sources.length} sources</div>
-                </div>
+                {computedAvg>0?(
+                  <div style={{display:"grid",gridTemplateColumns:"1.2fr 0.8fr 0.8fr 1.2fr",gap:6,fontSize:12,marginTop:8,paddingTop:8,borderTop:`2px solid ${C.purple}44`}}>
+                    <div style={{fontWeight:800,color:C.purple}}>AVERAGE</div>
+                    <div style={{fontWeight:800,textAlign:"right",color:C.purple}}>${fmt(computedAvg)}</div>
+                    <div style={{fontWeight:800,textAlign:"right",color:avgUpside>=0?C.green:C.red}}>{avgUpside>=0?"+":""}{fmt(avgUpside,1)}%</div>
+                    <div style={{fontSize:9,color:C.muted,textAlign:"right"}}>{availCount} of 4 models</div>
+                  </div>
+                ):(
+                  <div style={{textAlign:"center",fontSize:10,color:C.muted,marginTop:10,padding:"8px",background:C.surface,borderRadius:6}}>
+                    ⚠ No models available — Finnhub returned insufficient data for this ticker
+                  </div>
+                )}
 
                 {/* Disclaimer */}
                 <div style={{fontSize:9,color:C.mutedLight,marginTop:10,paddingTop:8,borderTop:`1px solid ${C.border}`,lineHeight:1.5}}>
-                  <b style={{color:C.gold}}>How to read this:</b> Each model uses a different lens. <b>DCF FCF</b> values the actual cash the business generates. <b>DCF EPS</b> values reported earnings — historically correlates better with price. <b>Peter Lynch</b> says fair P/E = growth rate (PEG=1): fast growers deserve higher multiples. <b>Analyst Target</b> is consensus of Wall St professionals. The wider the spread between models, the more uncertain the valuation — treat the range as your margin of safety, not a single "right" answer. Growth rate of {growthUsed}% sourced from: {growthSrc}, capped 2–15% for stability.
-                  {(!avail.analystTargetAvailable)&&<><br/><b style={{color:C.red}}>Note:</b> Wall St analyst target unavailable (may require Finnhub premium).</>}
-                  {(!avail.dcfFCFAvailable&&!avail.dcfEPSAvailable)&&<><br/><b style={{color:C.red}}>Note:</b> DCF models unavailable — Finnhub returned no EPS or FCF data for this ticker.</>}
+                  <b style={{color:C.gold}}>How to read this:</b> Each model uses a different lens. <b>DCF (FCF)</b> values free cash generated. <b>DCF (EPS)</b> values reported earnings — historically correlates better with price. <b>Peter Lynch</b> says fair P/E = growth rate (PEG=1). <b>Analyst Target</b> is Wall St professional consensus. The AVERAGE is used for the Buffett score below. The wider the spread, the more uncertain — treat the range as your margin of safety.
+                  {availCount<4&&<><br/><span style={{color:C.gold}}>Strikethrough rows</span>: data unavailable on Finnhub free tier.</>}
                 </div>
               </div>
             );
