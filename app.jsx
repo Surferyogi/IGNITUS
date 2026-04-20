@@ -440,6 +440,8 @@ function App(){
         fetchSenateTrades();
         // Auto-fetch senate from Quiver (pass holdings directly to avoid stale closure)
         updateSenateDataSilent(data.holdings);
+        // Apply moat ratings from meta table on every launch (silent, no spinner)
+        fetchMoatData(data.holdings);
 
       } else {
         setLoadMsg('WARNING: holdings empty. data='+JSON.stringify(data).slice(0,200));
@@ -602,6 +604,56 @@ function App(){
     setValLoading(p=>({...p,[ticker]:false}));
   }
 
+
+  // ── Moat ratings — read from meta table and patch holdings on every launch ──
+  // To update moat ratings in future: edit the 'moat_map' row in Supabase meta
+  // table via SQL editor. No code deploy needed — just update one DB row.
+  async function fetchMoatData(currentHoldings) {
+    const SB  = 'https://ckyshjxznltdkxfvhfdy.supabase.co';
+    const KEY = 'sb_publishable_y-wyxLIPM0eiQOezFH6UYQ_WEJzxLGz';
+    const HDR = { 'apikey': KEY, 'Authorization': 'Bearer ' + KEY };
+    try {
+      const res = await fetch(`${SB}/rest/v1/meta?key=eq.moat_map`, { headers: HDR });
+      if (!res.ok) { console.warn('[moat] meta fetch failed:', res.status); return; }
+      const rows = await res.json();
+      if (!rows.length) { console.warn('[moat] moat_map not found in meta'); return; }
+
+      let parsed;
+      try { parsed = JSON.parse(rows[0].value); } catch(e) { console.warn('[moat] JSON parse failed'); return; }
+      const moat_map = parsed.moat_map;
+      if (!moat_map) return;
+
+      // Patch holdings state — only touch entries where something changed
+      const toUpdate = [];
+      setHoldings(prev => prev.map(h => {
+        const m = moat_map[h.ticker];
+        if (!m) return h;
+        const moatOk   = h.moat    === m.moat;
+        const sectorOk = h.sector  === m.sector;
+        const styleOk  = (h.msStyle || h.ms_style) === m.msStyle;
+        if (moatOk && sectorOk && styleOk) return h;
+        toUpdate.push({ id: h.id, moat: m.moat, sector: m.sector, ms_style: m.msStyle });
+        return { ...h, moat: m.moat, sector: m.sector, msStyle: m.msStyle };
+      }));
+
+      // Persist changed rows back to DB silently in the background
+      if (toUpdate.length > 0) {
+        console.log(`[moat] patching ${toUpdate.length} changed holdings in DB`);
+        await Promise.all(toUpdate.map(u =>
+          fetch(`${SB}/rest/v1/holdings?id=eq.${u.id}`, {
+            method: 'PATCH',
+            headers: { ...HDR, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+            body: JSON.stringify({ moat: u.moat, sector: u.sector, ms_style: u.ms_style }),
+          }).catch(e => console.warn('[moat] patch failed for id', u.id, ':', e.message))
+        ));
+        console.log('[moat] done');
+      } else {
+        console.log('[moat] all moat ratings already current — no DB update needed');
+      }
+    } catch(e) {
+      console.warn('[moat] fetchMoatData silent error:', e.message); // non-critical
+    }
+  }
 
   // ── Live Senate trades — fetched on app open ──────────────────────────────
   async function fetchSenateTrades(){
@@ -846,6 +898,8 @@ function App(){
     setRefreshKey(k=>k+1);
     setLastRefresh(new Date());
     setPendingChanges(0);
+    // Re-apply moat ratings from meta on every manual refresh
+    fetchMoatData(holdings);
     setTimeout(()=>setRefreshAnim(false),800);
   }
 
@@ -1117,6 +1171,9 @@ function App(){
     setHoldingEditId(null);
     setHoldingForm({});
     if(window.portfolioDB){window.portfolioDB.updateHoldings(holdings).catch(e=>console.error('DB:',e));}
+    // Auto-apply moat ratings from meta map after every save — covers both edits and new holdings
+    // This means new holdings get moat/sector/msStyle automatically without any manual SQL
+    setTimeout(()=>fetchMoatData(holdings), 500);
     markDirty();
   }
 
@@ -1452,7 +1509,8 @@ function App(){
                   {list.length===0&&<div style={{fontSize:12,color:C.muted,padding:"8px 0"}}>{emptyMsg}</div>}
                   {list.map((h,i)=>{
                     const g=((h.price-h.avgCost)/h.avgCost)*100;
-                    const up=((h.intrinsic-h.price)/h.price)*100;
+                    const bIV=(valuations[h.ticker]?.valuations?.average)||h.intrinsic||0;
+                    const up=bIV>0?((bIV-h.price)/h.price)*100:0;
                     return(
                       <div key={h.ticker} style={{marginBottom:11,paddingBottom:11,borderBottom:i<list.length-1?`1px solid ${C.border}`:"none",cursor:"pointer"}} onClick={()=>{setSel(h);setDetailPeriod("6m");}}>
                         <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -1474,7 +1532,7 @@ function App(){
                         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,marginTop:6,background:C.surface,borderRadius:6,padding:"5px 8px"}}>
                           <div><div style={{fontSize:8,color:C.muted}}>Price</div><div style={{fontSize:11,fontWeight:700}}>{fmtL(h.price,h.mkt)}</div></div>
                           <div><div style={{fontSize:8,color:C.muted}}>Avg Cost</div><div style={{fontSize:11,fontWeight:700,color:C.mutedLight}}>{fmtL(h.avgCost,h.mkt)}</div></div>
-                          <div style={{textAlign:"right"}}><div style={{fontSize:8,color:C.muted}}>Intrinsic</div><div style={{fontSize:11,fontWeight:700,color:up>=0?C.green:C.red}}>{fmtL(h.intrinsic,h.mkt)}</div></div>
+                          <div style={{textAlign:"right"}}><div style={{fontSize:8,color:C.muted}}>Intrinsic{valuations[h.ticker]?.valuations?.average>0&&<span style={{color:C.purple,fontSize:7,marginLeft:2}}>●</span>}</div><div style={{fontSize:11,fontWeight:700,color:up>=0?C.green:C.red}}>{bIV>0?fmtL(bIV,h.mkt):"—"}</div></div>
                         </div>
                       </div>
                     );
