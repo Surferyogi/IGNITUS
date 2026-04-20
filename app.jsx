@@ -414,6 +414,7 @@ function App(){
   const [indicesSource,setIndicesSource]=useState('fallback'); // 'live'|'cached'|'fallback'
   const [indicesCachedAt,setIndicesCachedAt]=useState(null);  // ISO string of last successful live fetch
   const [valuations,setValuations]=useState({});   // {TICKER: {analystTarget, dcf, graham, peFair, average, recommendation}}
+  const [moatUpdatedAt,setMoatUpdatedAt]=useState(null); // FIX 5: when moat_map was last seeded
   const [valLoading,setValLoading]=useState({});
 
   // ── DB persistence ────────────────────────────────────────────────────────────
@@ -543,17 +544,22 @@ function App(){
       if(!res.ok){console.warn('[dividends] fetch failed:',res.status);return;}
       const d=await res.json();
       const divYields=d.divYields||{};
+      const peRatios=d.peRatios||{}; // FIX 1: live PE ratios from Finnhub (same call)
       const count=Object.keys(divYields).length;
-      console.log(`[dividends] Got ${count}/${tickers.length} yields`);
-      if(count===0) return;
+      const peCount=Object.keys(peRatios).length;
+      console.log(`[dividends] Got ${count}/${tickers.length} yields | ${peCount} PE ratios`);
+      if(count===0&&peCount===0) return;
       setHoldings(prev=>{
         const updated=prev.map(h=>{
           const dy=divYields[h.ticker];
-          // Only update if we got a real value; 0 = genuinely no dividend
-          return dy!==undefined?{...h,divYield:dy}:h;
+          const pe=peRatios[h.ticker];
+          const changes={};
+          if(dy!==undefined) changes.divYield=dy; // 0 valid = non-dividend stock
+          if(pe!==undefined&&pe>0) changes.peRatio=pe; // live PE fixes Buffett score
+          return Object.keys(changes).length>0?{...h,...changes}:h;
         });
         if(window.portfolioDB){
-          window.portfolioDB.updateHoldings(updated).catch(e=>console.warn('DB divYield:',e));
+          window.portfolioDB.updateHoldings(updated).catch(e=>console.warn('DB div/PE:',e));
         }
         return updated;
       });
@@ -563,8 +569,13 @@ function App(){
 
   // ── Live FX rates — fetched on app open ─────────────────────────────────────
   async function fetchLiveFx(){
+    const SB='https://ckyshjxznltdkxfvhfdy.supabase.co';
+    const KEY='sb_publishable_y-wyxLIPM0eiQOezFH6UYQ_WEJzxLGz';
+    const SBH={'Content-Type':'application/json','apikey':KEY,'Authorization':'Bearer '+KEY};
+    const FX_CACHE_KEY='fx_lkg'; // FIX 4: LKG cache key in Supabase meta
+
     try{
-      const res=await fetch("https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api",{
+      const res=await fetch(SB+"/functions/v1/smart-api",{
         method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({action:"fx_rates"}),
       });
@@ -573,12 +584,42 @@ function App(){
       if(d.rates&&Object.keys(d.rates).length>0){
         setFxRates(d.rates);
         setFxUpdated(new Date());
-        setRefreshKey(k=>k+1); // force recompute with new rates
-        console.log("FX rates updated:",Object.entries(d.rates).map(([k,v])=>k+"="+v).join(", "));
+        setRefreshKey(k=>k+1);
+        console.log("FX rates live updated:",Object.entries(d.rates).map(([k,v])=>k+"="+v).join(", "));
+        // FIX 4: Write successful FX rates to Supabase meta as LKG cache
+        // So next time live fetch fails, we use yesterday's rates instead of hardcoded 2024 values
+        fetch(SB+'/rest/v1/meta?on_conflict=key',{
+          method:'POST',
+          headers:{...SBH,'Prefer':'resolution=merge-duplicates,return=minimal'},
+          body:JSON.stringify({key:FX_CACHE_KEY,value:JSON.stringify({rates:d.rates,updatedAt:new Date().toISOString()})}),
+        }).catch(()=>{});
+        return; // success
       }
     }catch(e){
-      console.warn("FX fetch failed:",e.message);
+      console.warn("FX live fetch failed:",e.message);
     }
+    // FIX 4: Layer 2 — Try LKG cache from Supabase meta before using hardcoded fallback
+    try{
+      const cacheRes=await fetch(SB+`/rest/v1/meta?key=eq.${FX_CACHE_KEY}`,{
+        headers:{'apikey':KEY,'Authorization':'Bearer '+KEY}
+      });
+      if(cacheRes.ok){
+        const rows=await cacheRes.json();
+        if(rows.length&&rows[0].value){
+          const cached=JSON.parse(rows[0].value);
+          if(cached.rates&&Object.keys(cached.rates).length>0){
+            setFxRates(cached.rates);
+            setFxUpdated(new Date(cached.updatedAt||0));
+            setRefreshKey(k=>k+1);
+            const ageH=Math.round((Date.now()-new Date(cached.updatedAt||0).getTime())/3600000);
+            console.warn(`FX: using cached rates (${ageH}h old) — live fetch failed`);
+            return;
+          }
+        }
+      }
+    }catch(e2){console.warn("FX cache fetch failed:",e2.message);}
+    // Layer 3: hardcoded fallback (last resort only)
+    console.warn("FX: all sources failed — using hardcoded fallback rates");
   }
 
   async function fetchLiveIndices(){
@@ -641,7 +682,7 @@ function App(){
     try{
       const res=await fetch('https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api',{
         method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({action:'valuation',ticker}),
+        body:JSON.stringify({action:'valuation',ticker,mkt:holdings.find(h=>h.ticker===ticker)?.mkt||'US'}),
       });
       if(!res.ok){setValLoading(p=>({...p,[ticker]:false}));return;}
       const d=await res.json();
@@ -671,6 +712,9 @@ function App(){
       try { parsed = JSON.parse(rows[0].value); } catch(e) { console.warn('[moat] JSON parse failed'); return; }
       const moat_map = parsed.moat_map;
       if (!moat_map) return;
+      // FIX 5: capture when moat_map was last seeded
+      if(parsed.updatedAt) setMoatUpdatedAt(parsed.updatedAt);
+      else setMoatUpdatedAt('March 2026'); // fallback if no timestamp
 
       // Patch holdings state — only touch entries where something changed
       const toUpdate = [];
@@ -1437,7 +1481,7 @@ function App(){
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <div style={{flex:1,marginRight:10}}><ScoreBar score={sc.all} max={10}/></div>
                 <div style={{display:"flex",gap:4}}>
-                  <Bdg label={h.moat+" Moat"} bg={h.moat==="Wide"?"#1A2E1A":"#2A2A1A"} color={h.moat==="Wide"?C.green:C.gold}/>
+                  <Bdg label={h.moat+" Moat"} bg={h.moat==="Wide"?"#1A2E1A":"#2A2A1A"} color={h.moat==="Wide"?C.green:C.gold} title={moatUpdatedAt?"Moat: "+h.moat+" (Morningstar, updated "+moatUpdatedAt+")":undefined}/>
                   <Bdg label={r.lbl} bg={r.col+"22"} color={r.col}/>
                   {holdingSort==="div"&&h.divYield>0&&<Bdg label={fmt(h.divYield,2)+"% div"} bg={C.gold+"22"} color={C.gold}/>}
                 </div>
@@ -1620,6 +1664,18 @@ function App(){
 
         {insightTab==="buffett"&&(
           <>
+            {/* FIX 5: Moat data freshness notice */}
+            {moatUpdatedAt&&(
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                background:C.surface,borderRadius:8,padding:"6px 10px",marginBottom:8,
+                border:`1px dashed ${C.border}`}}>
+                <div style={{fontSize:9,color:C.muted}}>
+                  <span style={{fontWeight:700,color:C.gold}}>⚠ Moat ratings</span> sourced from Morningstar.
+                  Last refreshed: <b style={{color:C.text}}>{moatUpdatedAt}</b>
+                </div>
+                <span style={{fontSize:9,color:C.muted,fontStyle:"italic"}}>Re-run moat SQL quarterly</span>
+              </div>
+            )}
             <div style={{...card,background:"#1A1200",border:`1px solid ${C.gold}30`}}>
               <div style={{fontSize:10,color:C.gold,lineHeight:1.6}}>
                 <b>"Price is what you pay. Value is what you get."</b><br/>
