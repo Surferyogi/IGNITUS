@@ -2408,9 +2408,26 @@ function App(){
           <div style={{background:C.accent+"0D",border:`1px solid ${C.accentDim}30`,borderRadius:10,padding:"12px 14px",marginBottom:10}}>
             <div style={{fontSize:9,color:C.accent,fontWeight:700,letterSpacing:"0.08em",marginBottom:8}}>POSITION</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 14px",marginBottom:8}}>
-              {[["Shares",h.shares.toLocaleString(),null],["Avg Cost",fmtL(h.avgCost,h.mkt),fmtS(toSGDlive(h.avgCost,h.mkt))],["Market Value",fmtL(localVal,h.mkt,0),fmtS(sgdVal)],["Cost Basis",fmtL(localCost,h.mkt,0),fmtS(sgdCost)],["Unrealized P&L",`${pos?"+":"-"}${fmtL(Math.abs(localGain),h.mkt,0)}`,`${pos?"+":"-"}${fmtS(Math.abs(sgdGain))}`],["Annual Div (gross)",fmtL(localDiv,h.mkt,0),fmtS(sgdDiv)],].map(([l,v,sub])=>(
+              {[["Shares",h.shares.toLocaleString(),null],["Avg Cost",fmtL(h.avgCost,h.mkt),fmtS(toSGDlive(h.avgCost,h.mkt))],["Market Value",fmtL(localVal,h.mkt,0),fmtS(sgdVal)],["Cost Basis",fmtL(localCost,h.mkt,0),fmtS(sgdCost)],["Unrealized P&L",`${pos?"+":"-"}${fmtL(Math.abs(localGain),h.mkt,0)}`,`${pos?"+":"-"}${fmtS(Math.abs(sgdGain))}`],].map(([l,v,sub])=>(
                 <div key={l}><div style={{fontSize:9,color:C.muted}}>{l}</div><div style={{fontSize:13,fontWeight:700,color:l==="Unrealized P&L"?(pos?C.green:C.red):C.text}}>{v}</div>{sub&&<div style={{fontSize:9,color:C.muted}}>{sub}</div>}</div>
               ))}
+              {/* Annual Div — custom render to show yield % inline */}
+              {(()=>{
+                if(localDiv<=0) return(
+                  <div><div style={{fontSize:9,color:C.muted}}>Annual Div</div><div style={{fontSize:13,fontWeight:700,color:C.muted}}>—</div></div>
+                );
+                const yieldPct=h.price>0?(h.divYield||0):0;
+                return(
+                  <div>
+                    <div style={{fontSize:9,color:C.muted}}>Annual Div (gross)</div>
+                    <div style={{display:"flex",alignItems:"baseline",gap:5}}>
+                      <div style={{fontSize:13,fontWeight:700,color:C.gold}}>{fmtL(localDiv,h.mkt,0)}</div>
+                      {yieldPct>0&&<div style={{fontSize:10,fontWeight:700,color:C.gold,background:C.gold+"18",padding:"1px 5px",borderRadius:4}}>{fmt(yieldPct,2)}%</div>}
+                    </div>
+                    <div style={{fontSize:9,color:C.muted}}>{fmtS(sgdDiv)}</div>
+                  </div>
+                );
+              })()}
             </div>
             {/* Dividend tax row — only shown for markets with withholding tax */}
             {(()=>{
