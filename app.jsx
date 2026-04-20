@@ -380,6 +380,8 @@ function App(){
   const [groupBy,setGroupBy]=useState("sector");
   const [search,setSearch]=useState("");
   const searchInputRef=React.useRef(null); // preserve focus across re-renders
+  const [showValue,setShowValue]=useState(true);   // toggle portfolio value visibility
+  const [holdingSort,setHoldingSort]=useState("default"); // default|best|worst|value|div
   const [tradeType,setTradeType]=useState("ALL");
   const [insightTab,setInsightTab]=useState("performers");
   const [aiText,setAiText]=useState({});
@@ -1271,8 +1273,32 @@ function App(){
             >✕</button>
           )}
         </div>
-        <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10}}>{filtered.length} Holdings{mktFilter!=="ALL"?` · ${mktFilter}`:""}</div>
-        {filtered.map(h=>{
+        {/* Sort controls */}
+        <div style={{display:"flex",gap:5,marginBottom:8,overflowX:"auto",paddingBottom:2}}>
+          {[
+            {key:"default", label:"📋 Default"},
+            {key:"best",    label:"📈 Best"},
+            {key:"worst",   label:"📉 Worst"},
+            {key:"value",   label:"💰 Value"},
+            {key:"div",     label:"💵 Dividend"},
+          ].map(s=>(
+            <button key={s.key} onClick={()=>setHoldingSort(s.key)} style={{
+              flexShrink:0,padding:"5px 10px",borderRadius:14,fontSize:10,fontWeight:700,cursor:"pointer",
+              background:holdingSort===s.key?C.accent:C.surface,
+              color:holdingSort===s.key?"#000":C.muted,
+              border:`1px solid ${holdingSort===s.key?C.accent:C.border}`,
+            }}>{s.label}</button>
+          ))}
+        </div>
+        <div style={{fontSize:11,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10}}>{filtered.length} Holdings{mktFilter!=="ALL"?` · ${mktFilter!=="CN"?mktFilter:"HK"}`:""}</div>
+        {(()=>{
+          let sorted=[...filtered];
+          if(holdingSort==="best") sorted.sort((a,b)=>((b.price-b.avgCost)/b.avgCost)-((a.price-a.avgCost)/a.avgCost));
+          else if(holdingSort==="worst") sorted.sort((a,b)=>((a.price-a.avgCost)/a.avgCost)-((b.price-b.avgCost)/b.avgCost));
+          else if(holdingSort==="value") sorted.sort((a,b)=>toSGDlive(b.price*b.shares,b.mkt)-toSGDlive(a.price*a.shares,a.mkt));
+          else if(holdingSort==="div") sorted.sort((a,b)=>(b.divYield||0)-(a.divYield||0));
+          return sorted;
+        })().map(h=>{
           const localVal=h.price*h.shares,localCost=h.avgCost*h.shares,localGain=localVal-localCost;
           const gainPct=((h.price-h.avgCost)/h.avgCost)*100;
           const compIV=valuations[h.ticker]?.valuations?.average||0;
@@ -1335,9 +1361,7 @@ function App(){
         })}
       </>
     );
-  }
-
-  // ── Insights tab ─────────────────────────────────────────────────────────────
+  } ─────────────────────────────────────────────────────────────
   function InsightsView(){
     return(
       <>
@@ -2618,15 +2642,16 @@ function App(){
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
               <div style={{fontSize:11,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026.04.19-02</span></div>
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
+              <button onClick={()=>setShowValue(v=>!v)} title={showValue?"Hide values":"Show values"} style={{background:"none",border:"none",cursor:"pointer",padding:"0 2px",fontSize:14,color:showValue?C.muted:C.accent,lineHeight:1}}>{showValue?"👁":"🙈"}</button>
             </div>
-            <div style={{fontSize:30,fontWeight:800,letterSpacing:"-1px",lineHeight:1}}>{fmtS(totalValSGD)}</div>
+            <div style={{fontSize:30,fontWeight:800,letterSpacing:"-1px",lineHeight:1}}>{showValue?fmtS(totalValSGD):"S$ ••••••"}</div>
             <div style={{fontSize:10,color:C.muted,marginTop:3}}>{holdings.length} stocks · {totalShares.toLocaleString()} shares{priceUpdated&&<span style={{color:C.green}}> · prices {priceUpdated.toLocaleTimeString("en-SG",{hour:"2-digit",minute:"2-digit"})}</span>}{fxUpdated&&<span style={{color:C.gold}}> · FX {fxUpdated.toLocaleTimeString("en-SG",{hour:"2-digit",minute:"2-digit"})}</span>}</div>
           </div>
           <div style={{textAlign:"right"}}>
-            <div style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 10px",borderRadius:20,fontSize:13,fontWeight:700,background:unrealSGD>=0?C.green+"18":C.red+"18",color:unrealSGD>=0?C.green:C.red}}>{unrealSGD>=0?"UP":"DN"} {fmtPct(unrealPct)}</div>
-            <div style={{fontSize:11,color:unrealSGD>=0?C.green:C.red,fontWeight:600,marginTop:5}}>Unr. {unrealSGD>=0?"+":"-"}{fmtS(Math.abs(unrealSGD))}</div>
-            <div style={{fontSize:11,color:realizedSGD>=0?C.gold:C.red,fontWeight:600,marginTop:3}}>Rlz. {realizedSGD>=0?"+":"-"}{fmtS(Math.abs(realizedSGD))}</div>
-            <div style={{fontSize:10,color:C.gold,marginTop:3}}>Div {fmtS(totalDivSGD)}/yr</div>
+            <div style={{display:"inline-flex",alignItems:"center",gap:4,padding:"3px 10px",borderRadius:20,fontSize:13,fontWeight:700,background:unrealSGD>=0?C.green+"18":C.red+"18",color:unrealSGD>=0?C.green:C.red}}>{unrealSGD>=0?"UP":"DN"} {showValue?fmtPct(unrealPct):"• •%"}</div>
+            <div style={{fontSize:11,color:unrealSGD>=0?C.green:C.red,fontWeight:600,marginTop:5}}>Unr. {showValue?(unrealSGD>=0?"+":"-")+fmtS(Math.abs(unrealSGD)):"••••••"}</div>
+            <div style={{fontSize:11,color:realizedSGD>=0?C.gold:C.red,fontWeight:600,marginTop:3}}>Rlz. {showValue?(realizedSGD>=0?"+":"-")+fmtS(Math.abs(realizedSGD)):"••••••"}</div>
+            <div style={{fontSize:10,color:C.gold,marginTop:3}}>Div {showValue?fmtS(totalDivSGD)+"/yr":"••••••"}</div>
           </div>
         </div>
       </div>
