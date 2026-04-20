@@ -334,7 +334,7 @@ function MktSelector({mktFilter,setMktFilter,holdings}){
         const active=mktFilter===m;
         return(
           <button key={m} onClick={()=>setMktFilter(m)} style={{flexShrink:0,padding:"7px 11px",borderRadius:10,cursor:"pointer",background:active?C.accent:C.card,color:active?"#000":C.text,border:`1px solid ${active?C.accent:C.border}`,textAlign:"center",minWidth:64}}>
-            <div style={{fontSize:12,fontWeight:800}}>{m==="ALL"?"ALL":m}</div>
+            <div style={{fontSize:12,fontWeight:800}}>{m==="ALL"?"ALL":m==="CN"?"HK":m}</div>
             <div style={{fontSize:9,color:active?"#00000088":C.muted}}>{cnt} stocks</div>
             {m!=="ALL"&&<div style={{fontSize:8,color:active?"#00000066":C.muted+"88"}}>{IDX[m]||""}</div>}
           </button>
@@ -775,7 +775,7 @@ function App(){
 
   // Index ETF tickers for each market (used in PerfChart)
   const INDEX_ETFS={
-    ALL:"SPY", US:"SPY", SG:"ES3.SI", CN:"2800.HK", JP:"1306.T", EU:"CSPX.L"
+    ALL:"SPY", US:"SPY", SG:"ES3.SI", CN:"2800.HK", JP:"^N225", EU:"CSPX.L"
   };
 
   async function fetchPerfChartData(mktFilter, period){
@@ -788,7 +788,7 @@ function App(){
     if(subset.length===0){setPerfChartLoading(prev=>({...prev,[key]:false}));return;}
 
     // Index ETF per market
-    const INDEX_ETFS={ALL:"SPY",US:"SPY",SG:"ES3.SI",CN:"2800.HK",JP:"1306.T",EU:"CSPX.L"};
+    const INDEX_ETFS={ALL:"SPY",US:"SPY",SG:"ES3.SI",CN:"2800.HK",JP:"^N225",EU:"CSPX.L"};
     const idxTicker=INDEX_ETFS[mktFilter]||"SPY";
 
     // Top holdings by value (max 8 to stay within edge fn timeout)
@@ -980,7 +980,13 @@ function App(){
   const byGain=useMemo(()=>[...holdings].sort((a,b)=>((b.price-b.avgCost)/b.avgCost)-((a.price-a.avgCost)/a.avgCost)),[holdings,refreshKey]);
   const top10=byGain.slice(0,10);
   const worst10=[...byGain].reverse().slice(0,10);
-  const buffettList=useMemo(()=>[...holdings].map(h=>({...h,...buffettScore(h)})).sort((a,b)=>b.score-a.score),[holdings,refreshKey]);
+  const buffettList=useMemo(()=>[...holdings].map(h=>{
+    // Use computed valuation average (FMP/Finnhub) when available, else DB intrinsic
+    const compIV=valuations[h.ticker]?.valuations?.average||0;
+    const effIV=compIV>0?compIV:(h.intrinsic||0);
+    const hScored={...h,intrinsic:effIV};
+    return {...hScored,...buffettScore(hScored)};
+  }).sort((a,b)=>b.score-a.score),[holdings,valuations,refreshKey]);
 
   // AI analysis
   async function analyse(h){
@@ -1286,8 +1292,9 @@ function App(){
                     <span style={{color:C.muted,fontWeight:400}}> ({fmtS(toSGDlive(h.avgCost,h.mkt))})</span>
                   </div>
                   <div style={{fontSize:10,color:C.mutedLight,marginTop:1}}>
-                    Intrinsic: <b style={{color:upside>=0?C.green:C.red}}>{fmtL(effIV,h.mkt)}</b>{compIV>0&&<span style={{color:C.purple,fontSize:8,fontWeight:700,marginLeft:3}}>●</span>}
-                    <span style={{color:C.muted,fontWeight:400}}> {upside>=0?"+":""}{fmt(upside,1)}% upside</span>
+                    Intrinsic: {effIV>0
+                      ?<><b style={{color:upside>=0?C.green:C.red}}>{fmtL(effIV,h.mkt)}</b>{compIV>0&&<span style={{color:C.purple,fontSize:8,fontWeight:700,marginLeft:3}}>●</span>}<span style={{color:C.muted,fontWeight:400}}> {upside>=0?"+":""}{fmt(upside,1)}% upside</span></>
+                      :<span style={{color:C.muted}}>— <span style={{fontSize:9}}>tap stock to compute</span></span>}
                   </div>
                 </div>
                 <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,flexShrink:0,marginLeft:8}}>
@@ -1423,11 +1430,16 @@ function App(){
             </div>
             {senateLoading&&<div style={{textAlign:"center",padding:16,color:C.gold,fontSize:11}}>↻ Loading live senate trades...</div>}
             {!senateLoading&&senateData.length===0&&<div style={{textAlign:"center",padding:20,color:C.muted,fontSize:11}}>No senate trades in database.<br/>Add entries via the Supabase dashboard.</div>}
-            {!senateLoading&&senateData.filter((s,i,arr)=>arr.findIndex(x=>x.ticker===s.ticker&&x.name===s.name&&x.action===s.action&&x.date===s.date)===i).map((s,i,arr)=>{
+            {!senateLoading&&senateData.filter((s,i,arr)=>arr.findIndex(x=>x.ticker===s.ticker&&x.name===s.name&&x.action===s.action&&x.date===s.date)===i)
+              .sort((a,b)=>b.date.localeCompare(a.date))
+              .slice(0,20)
+              .map((s,i,arr)=>{
               const inPort=holdings.find(h=>h.ticker===s.ticker);
               const extPrice=senatePrices[s.ticker];
               const livePrice=inPort?inPort.price:(extPrice?.price||s.priceNow||0);
-              const intrinsic=inPort?inPort.intrinsic:(extPrice?.intrinsic||0);
+              // Use computed valuation average (FMP/Finnhub) if available
+              const compIV=valuations[s.ticker]?.valuations?.average||0;
+              const intrinsic=compIV>0?compIV:(inPort?inPort.intrinsic:(extPrice?.intrinsic||0));
               const avgCost=inPort?inPort.avgCost:0;
               const mkt=inPort?inPort.mkt:"US";
               const histKey=s.ticker+'_'+s.date;
