@@ -498,7 +498,7 @@ function App(){
         const updated = prev.map(h => {
           const p = results[h.ticker];
           const dy = divYields[h.ticker]; // live dividend yield % (e.g. 2.5 for 2.5%)
-          const updates: any = {};
+          const updates = {};
           if (p && p > 0) updates.price = p;
           if (dy !== undefined && dy >= 0) updates.divYield = dy; // 0 is valid (non-dividend stock)
           return Object.keys(updates).length > 0 ? { ...h, ...updates } : h;
@@ -1361,7 +1361,9 @@ function App(){
         })}
       </>
     );
-  } ─────────────────────────────────────────────────────────────
+  }
+
+  // ── Insights tab ─────────────────────────────────────────────────────────────
   function InsightsView(){
     return(
       <>
