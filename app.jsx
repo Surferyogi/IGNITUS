@@ -2315,9 +2315,8 @@ function App(){
     const hasSenate=senateData.length>0;
 
     // Senate buy signals — reuse existing senateData
-    // Senate BUY signals — same dedup logic as Insights tab (ticker+name+action+date)
+    // Senate trades — identical logic to Insights Senate tab (all actions, same dedup+sort)
     const senateBuys=senateData
-      .filter(s=>s.action==="BUY")
       .filter((s,i,arr)=>arr.findIndex(x=>x.ticker===s.ticker&&x.name===s.name&&x.action===s.action&&x.date===s.date)===i)
       .sort((a,b)=>b.date.localeCompare(a.date))
       .slice(0,10);
@@ -2504,11 +2503,10 @@ function App(){
         {hasSenate&&(
           <div style={card}>
             <div style={{...cardT,display:"flex",alignItems:"center",gap:6}}>
-              <span>🏛</span> Senate BUY Signals (Latest 10)
+              <span>🏛</span> Senate Trades (Latest 10)
             </div>
             <div style={{fontSize:13,color:C.muted,marginBottom:10,lineHeight:1.5}}>
-              Recent US Congress BUY trades — same data as Insights → Senate tab, BUY actions only.
-              Congress members must disclose within 30-45 days per STOCK Act. Stocks in your portfolio highlighted.
+              Same data as Insights → Senate tab. Latest 10 trades (BUY & SELL). Congress must disclose within 30-45 days per STOCK Act. Stocks in your portfolio highlighted.
             </div>
             {senateBuys.length===0&&(
               <div style={{fontSize:14,color:C.muted,textAlign:"center",padding:"12px 0"}}>
@@ -2544,7 +2542,7 @@ function App(){
                     <div style={{textAlign:"right"}}>
                       <div style={{display:"flex",alignItems:"center",gap:5,justifyContent:"flex-end",marginBottom:2}}>
                         <span style={{fontWeight:800,fontSize:17}}>{s.ticker}</span>
-                        <Bdg label="BUY" bg={C.green+"22"} color={C.green}/>
+                        <Bdg label={s.action} bg={s.action==="BUY"?C.green+"22":C.red+"22"} color={s.action==="BUY"?C.green:C.red}/>
                       </div>
                       <div style={{fontSize:14,color:C.gold,fontWeight:600}}>{s.amount}</div>
                     </div>
