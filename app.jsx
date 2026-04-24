@@ -3470,18 +3470,4 @@ function App(){
         '<br><div style="color:#8899AA;font-size:10px">Screenshot this and send to developer</div></div>';
     }
   }
-}
-window.addEventListener('error', function(e) {
-  const root = document.getElementById('root');
-  const loading = document.getElementById('loading');
-  if (loading) loading.style.display = 'none';
-  if (root && !root.innerHTML) {
-    root.innerHTML =
-      '<div style="background:#0A0D14;color:#FF5577;padding:20px;font-family:monospace;font-size:12px;position:fixed;inset:0;overflow:auto">' +
-      '<div style="font-size:18px;margin-bottom:12px">🔴 Ignitus Load Error</div>' +
-      '<b>Error:</b> ' + (e.message||'Unknown') + '<br>' +
-      '<b>File:</b> ' + (e.filename||'') + '<br>' +
-      '<b>Line:</b> ' + e.lineno + ' Col: ' + e.colno + '<br><br>' +
-      '<div style="color:#8899AA;font-size:10px">Screenshot this and send to developer</div></div>';
-  }
-});)();
+})();
