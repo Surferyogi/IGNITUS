@@ -2995,6 +2995,8 @@ Recommend which to sell, how much, and the sequencing. Max 200 words. No disclai
   // ── Holding detail modal ─────────────────────────────────────────────────────
   function HoldingDetail(){
     const h=sel;if(!h)return null;
+    const [showAllBuy,setShowAllBuy]=useState(false);   // expand buy history
+    const [showAllSell,setShowAllSell]=useState(false); // expand sell history
     // Fetch real history for current period when period changes
     useEffect(()=>{
       if(!h)return;
@@ -3275,71 +3277,65 @@ Recommend which to sell, how much, and the sequencing. Max 200 words. No disclai
             }
           })()}
 
-          {buyHist.length>0&&(()=>{
-            const [showAllBuy,setShowAllBuy]=React.useState(false);
-            const displayBuy=showAllBuy?buyHist:buyHist.slice(0,8);
-            return(
-              <div style={card}>
-                <div style={{...row,marginBottom:6}}>
-                  <div style={cardT}>Buy History ({buyHist.length} lots)</div>
-                  {buyHist.length>8&&(
-                    <button onClick={()=>setShowAllBuy(v=>!v)} style={{fontSize:13,fontWeight:700,color:C.accent,background:"none",border:"none",cursor:"pointer",padding:"0 2px"}}>
-                      {showAllBuy?"▲ Show less":"▼ Show all "+buyHist.length}
-                    </button>
-                  )}
-                </div>
-                {displayBuy.map((bt,i)=>{
-                  const total=bt.price*bt.shares;
-                  return(
-                    <div key={i} style={{marginBottom:5,paddingBottom:5,borderBottom:i<displayBuy.length-1?`1px solid ${C.border}`:"none"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",fontSize:15}}>
-                        <span style={{color:C.muted,fontSize:14}}>{bt.date}</span>
-                        <div style={{display:"flex",gap:8,alignItems:"baseline"}}>
-                          <span style={{color:C.mutedLight,fontSize:14}}>{bt.shares.toLocaleString()} sh @ {fmtL(bt.price,h.mkt)}</span>
-                          <span style={{fontWeight:700,color:C.green,fontSize:15}}>= {fmtL(total,h.mkt,0)}</span>
-                        </div>
+          {buyHist.length>0&&(
+            <div style={card}>
+              <div style={{...row,marginBottom:6}}>
+                <div style={cardT}>Buy History ({buyHist.length} lots)</div>
+                {buyHist.length>8&&(
+                  <button onClick={()=>setShowAllBuy(v=>!v)} style={{fontSize:13,fontWeight:700,color:C.accent,background:"none",border:"none",cursor:"pointer",padding:"0 2px"}}>
+                    {showAllBuy?"▲ Show less":"▼ Show all "+buyHist.length}
+                  </button>
+                )}
+              </div>
+              {(showAllBuy?buyHist:buyHist.slice(0,8)).map((bt,i)=>{
+                const displayBuy=showAllBuy?buyHist:buyHist.slice(0,8);
+                const total=bt.price*bt.shares;
+                return(
+                  <div key={i} style={{marginBottom:5,paddingBottom:5,borderBottom:i<displayBuy.length-1?`1px solid ${C.border}`:"none"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",fontSize:15}}>
+                      <span style={{color:C.muted,fontSize:14}}>{bt.date}</span>
+                      <div style={{display:"flex",gap:8,alignItems:"baseline"}}>
+                        <span style={{color:C.mutedLight,fontSize:14}}>{bt.shares.toLocaleString()} sh @ {fmtL(bt.price,h.mkt)}</span>
+                        <span style={{fontWeight:700,color:C.green,fontSize:15}}>= {fmtL(total,h.mkt,0)}</span>
                       </div>
                     </div>
-                  );
-                })}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {sellHist.length>0&&(
+            <div style={card}>
+              <div style={{...row,marginBottom:6}}>
+                <div style={cardT}>Sell History ({sellHist.length} trades)</div>
+                {sellHist.length>5&&(
+                  <button onClick={()=>setShowAllSell(v=>!v)} style={{fontSize:13,fontWeight:700,color:C.accent,background:"none",border:"none",cursor:"pointer",padding:"0 2px"}}>
+                    {showAllSell?"▲ Show less":"▼ Show all "+sellHist.length}
+                  </button>
+                )}
               </div>
-            );
-          })()}
-          {sellHist.length>0&&(()=>{
-            const [showAllSell,setShowAllSell]=React.useState(false);
-            const displaySell=showAllSell?sellHist:sellHist.slice(0,5);
-            return(
-              <div style={card}>
-                <div style={{...row,marginBottom:6}}>
-                  <div style={cardT}>Sell History ({sellHist.length} trades)</div>
-                  {sellHist.length>5&&(
-                    <button onClick={()=>setShowAllSell(v=>!v)} style={{fontSize:13,fontWeight:700,color:C.accent,background:"none",border:"none",cursor:"pointer",padding:"0 2px"}}>
-                      {showAllSell?"▲ Show less":"▼ Show all "+sellHist.length}
-                    </button>
-                  )}
-                </div>
-                {displaySell.map((st,i)=>{
-                  const received=st.price*st.shares;
-                  return(
-                    <div key={i} style={{marginBottom:5,paddingBottom:5,borderBottom:i<displaySell.length-1?`1px solid ${C.border}`:"none"}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",fontSize:15}}>
-                        <span style={{color:C.muted,fontSize:14}}>{st.date}</span>
-                        <div style={{display:"flex",gap:8,alignItems:"baseline"}}>
-                          <span style={{color:C.mutedLight,fontSize:14}}>{st.shares.toLocaleString()} sh @ {fmtL(st.price,h.mkt)}</span>
-                          <span style={{fontWeight:700,color:C.red,fontSize:15}}>= {fmtL(received,h.mkt,0)}</span>
-                        </div>
+              {(showAllSell?sellHist:sellHist.slice(0,5)).map((st,i)=>{
+                const displaySell=showAllSell?sellHist:sellHist.slice(0,5);
+                const received=st.price*st.shares;
+                return(
+                  <div key={i} style={{marginBottom:5,paddingBottom:5,borderBottom:i<displaySell.length-1?`1px solid ${C.border}`:"none"}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",fontSize:15}}>
+                      <span style={{color:C.muted,fontSize:14}}>{st.date}</span>
+                      <div style={{display:"flex",gap:8,alignItems:"baseline"}}>
+                        <span style={{color:C.mutedLight,fontSize:14}}>{st.shares.toLocaleString()} sh @ {fmtL(st.price,h.mkt)}</span>
+                        <span style={{fontWeight:700,color:C.red,fontSize:15}}>= {fmtL(received,h.mkt,0)}</span>
                       </div>
-                      {st.profit!=null&&(
-                        <div style={{textAlign:"right",fontSize:14,fontWeight:700,color:st.profit>=0?C.green:C.red,marginTop:2}}>
-                          P&L {st.profit>=0?"+":"-"}{fmtL(Math.abs(st.profit),h.mkt,0)}
-                        </div>
-                      )}
                     </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
+                    {st.profit!=null&&(
+                      <div style={{textAlign:"right",fontSize:14,fontWeight:700,color:st.profit>=0?C.green:C.red,marginTop:2}}>
+                        P&L {st.profit>=0?"+":"-"}{fmtL(Math.abs(st.profit),h.mkt,0)}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
           <div style={card}><div style={cardT}>Analysis Scores</div>{[["Intrinsic Value",sc.iv],["Economic Moat",sc.mt],["Dividend Yield",sc.dv],["Overall",sc.all]].map(([l,v])=>(<div key={l} style={{marginBottom:8}}><div style={{fontSize:15,color:l==="Overall"?C.text:C.muted,marginBottom:3,fontWeight:l==="Overall"?700:400}}>{l}</div><ScoreBar score={v} max={10} color={l==="Overall"?C.accent:undefined}/></div>))}</div>
           <div style={card}><div style={cardT}>Key Stats</div><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"8px 12px"}}>{[["P/E",fmt(h.peRatio)],["Div Yield",fmt(h.divYield)+"%"],["Sector",h.sector],["MS Style",h.msStyle],["Market",`${h.mkt} (${m.code})`],["Benchmark",m.index]].map(([l,v])=>(<div key={l}><div style={{fontSize:13,color:C.muted}}>{l}</div><div style={{fontSize:15,fontWeight:600}}>{v}</div></div>))}</div></div>
