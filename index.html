@@ -2,231 +2,111 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-
-  <!-- PWA: makes it feel native when added to home screen -->
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Ignitus">
-  <link rel="manifest" href="manifest.json">
-  <meta name="theme-color" content="#0A0D14">
-
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- CSP: allow CDN scripts + anthropic API calls -->
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self';
+             script-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com;
+             style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+             font-src https://fonts.gstatic.com;
+             connect-src *;
+             img-src 'self' data: https:;">
   <title>Ignitus Portfolio</title>
-
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body, #root {
-      width: 100%; height: 100%;
-      min-height: 100vh;
-      min-height: -webkit-fill-available;
+      width: 100%; height: 100vh;
       background: #0A0D14;
       color: #E8EDF5;
-      font-family: -apple-system, 'DM Sans', system-ui, sans-serif;
-      overflow-x: hidden;
+      font-family: 'DM Sans', system-ui, sans-serif;
+      overflow: hidden;
     }
-
-    /* Safe area padding for iPhone notch / Dynamic Island */
-    #root { padding-top: env(safe-area-inset-top); }
-
+    /* Loading screen */
     #loading {
       position: fixed; inset: 0;
       display: flex; flex-direction: column;
       align-items: center; justify-content: center;
-      background: #0A0D14; z-index: 999; gap: 18px;
+      background: #0A0D14; z-index: 999;
+      gap: 16px;
     }
-    .logo { font-size: 34px; font-weight: 800; color: #00D4FF; letter-spacing: -1px; }
-    .sub  { font-size: 13px; color: #6B7A99; }
-    .bar  { width: 130px; height: 2px; background: #1E2A3E; border-radius: 1px; overflow: hidden; }
-    .fill { width: 55%; height: 100%; background: #00D4FF; border-radius: 1px;
-            animation: slide 1.2s ease-in-out infinite alternate; }
-    @keyframes slide { from { transform: translateX(-50px); } to { transform: translateX(70px); } }
-
-    #add-prompt {
-      position: fixed; bottom: 0; left: 0; right: 0;
-      background: #111620; border-top: 1px solid #1E2A3E;
-      padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
-      font-size: 12px; color: #6B7A99; text-align: center;
-      z-index: 100; display: none;
-    }
-    #add-prompt b { color: #00D4FF; }
-    #add-prompt .dismiss { float: right; color: #6B7A99; font-size: 16px; cursor: pointer; }
+    #loading .logo { font-size: 32px; font-weight: 800; color: #00D4FF; letter-spacing: -1px; }
+    #loading .sub  { font-size: 12px; color: #6B7A99; }
+    #loading .bar  { width: 120px; height: 2px; background: #1E2A3E; border-radius: 1px; overflow: hidden; }
+    #loading .fill { width: 60%; height: 100%; background: #00D4FF; border-radius: 1px;
+                     animation: slide 1s ease-in-out infinite alternate; }
+    @keyframes slide { from { transform: translateX(-40px); } to { transform: translateX(60px); } }
+    #db-path { position: fixed; bottom: 8px; left: 0; right: 0; text-align: center;
+               font-size: 9px; color: #2A3A55; z-index: 1; pointer-events: none; }
   </style>
 </head>
 <body>
   <div id="loading">
     <div class="logo">IGNITUS</div>
-    <div class="sub">Connecting to database...</div>
+    <div class="sub">Loading portfolio from database...</div>
     <div class="bar"><div class="fill"></div></div>
   </div>
   <div id="root"></div>
+  <div id="db-path"></div>
 
-  <!-- Add to Home Screen prompt (shown in browser, hidden when standalone) -->
-  <div id="add-prompt">
-    <span class="dismiss" onclick="this.parentElement.style.display='none'">×</span>
-    Tap <b>Share</b> then <b>"Add to Home Screen"</b> for the full app experience
-  </div>
-
-  <!-- React 18 + Babel via CDN -->
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <!-- React + Babel via CDN -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- Supabase shim: exposes window.portfolioDB using Supabase REST -->
+  <!-- Bootstrap: load DB then mount app -->
   <script>
-    const SB_URL = 'https://ckyshjxznltdkxfvhfdy.supabase.co';
-    const SB_KEY = 'sb_publishable_y-wyxLIPM0eiQOezFH6UYQ_WEJzxLGz';
-    const SB_HDR = {
-      'apikey': SB_KEY,
-      'Authorization': 'Bearer ' + SB_KEY,
-      'Content-Type': 'application/json',
-    };
-
-    async function sbGet(table, qs) {
-      const params = new URLSearchParams({ select: '*', ...qs });
-      const r = await fetch(SB_URL + '/rest/v1/' + table + '?' + params,
-        { headers: { ...SB_HDR, Prefer: 'count=exact' } });
-      if (!r.ok) throw new Error('Supabase ' + r.status);
-      return r.json();
-    }
-
-    async function sbUpsert(table, rows) {
-      const arr = Array.isArray(rows) ? rows : [rows];
-      const r = await fetch(SB_URL + '/rest/v1/' + table, {
-        method: 'POST',
-        headers: { ...SB_HDR, Prefer: 'resolution=merge-duplicates,return=minimal' },
-        body: JSON.stringify(arr),
-      });
-      if (!r.ok) throw new Error('Supabase upsert ' + r.status);
-      return true;
-    }
-
-    async function sbDelete(table, key, val) {
-      const r = await fetch(SB_URL + '/rest/v1/' + table + '?' + key + '=eq.' + encodeURIComponent(val), {
-        method: 'DELETE', headers: SB_HDR,
-      });
-      if (!r.ok) throw new Error('Supabase delete ' + r.status);
-      return true;
-    }
-
-    // camelCase JS <-> snake_case Supabase
-    function toSb(h) {
-      return {
-        id: h.id, ticker: h.ticker, name: h.name || h.ticker,
-        mkt: h.mkt, sector: h.sector || 'Technology',
-        ms_style: h.msStyle || h.ms_style || 'Large Blend',
-        shares: h.shares,
-        avg_cost: h.avgCost != null ? h.avgCost : (h.avg_cost || 0),
-        price: h.price, intrinsic: h.intrinsic || h.price * 1.1,
-        moat: h.moat || 'Narrow',
-        div_yield: h.divYield != null ? h.divYield : (h.div_yield || 0),
-        pe_ratio: h.peRatio != null ? h.peRatio : (h.pe_ratio || 0),
-        revenue_growth: h.revenueGrowth != null ? h.revenueGrowth : (h.revenue_growth || 0),
-        senate_buys:  h.senateBuys  != null ? h.senateBuys  : (h.senate_buys  || 0),
-        senate_sells: h.senateSells != null ? h.senateSells : (h.senate_sells || 0),
-      };
-    }
-
-    function fromSb(r) {
-      return {
-        id: r.id, ticker: r.ticker, name: r.name, mkt: r.mkt,
-        sector: r.sector, msStyle: r.ms_style,
-        shares: r.shares, avgCost: r.avg_cost,
-        price: r.price, intrinsic: r.intrinsic, moat: r.moat,
-        divYield: r.div_yield, peRatio: r.pe_ratio,
-        revenueGrowth: r.revenue_growth,
-        senateBuys: r.senate_buys, senateSells: r.senate_sells,
-      };
-    }
-
-    // portfolioDB — same API as Electron preload, so app.jsx works unchanged
-    window.portfolioDB = {
-      load: async () => {
-        const [hRaw, trades, sRaw] = await Promise.all([
-          sbGet('holdings', { order: 'ticker' }),
-          sbGet('trades',   { order: 'date.desc' }),
-          sbGet('senate',   { order: 'date.desc' }),
-        ]);
-        const holdings = (hRaw || []).map(fromSb);
-        const senate   = (sRaw  || []).map(r => ({
-          ...r, estPrice: r.est_price, priceNow: r.price_now,
-          action: r.action, // keep action field consistent
-        }));
-        return { holdings, trades: trades || [], senate,
-                 source: 'supabase', dbPath: SB_URL };
-      },
-      saveHolding: async h => {
-        await sbUpsert('holdings', toSb({ id: h.id || Date.now(), ...h }));
-        return { ok: true };
-      },
-      deleteHolding: async ticker => {
-        await sbDelete('holdings', 'ticker', ticker);
-        return { ok: true };
-      },
-      updateHoldings: async arr => {
-        const rows = arr.map(h => toSb({ id: h.id || Date.now(), ...h }));
-        for (let i = 0; i < rows.length; i += 50) {
-          await sbUpsert('holdings', rows.slice(i, i + 50));
-        }
-        return { ok: true };
-      },
-      saveTrade: async t => {
-        await sbUpsert('trades', {
-          id: t.id || Date.now(), ticker: t.ticker, type: t.type,
-          date: t.date, price: t.price, shares: t.shares,
-          mkt: t.mkt || 'US', ccy: t.ccy || 'USD', profit: t.profit || 0,
-        });
-        return { ok: true };
-      },
-      deleteTrade: async id => {
-        await sbDelete('trades', 'id', id);
-        return { ok: true };
-      },
-      exportJson: async () => {
-        const [hRaw, trades] = await Promise.all([sbGet('holdings'), sbGet('trades')]);
-        return JSON.stringify({
-          holdings: (hRaw||[]).map(fromSb), trades: trades||[],
-          exportedAt: new Date().toISOString(),
-        }, null, 2);
-      },
-      getDbPath: async () => 'Supabase · ' + SB_URL,
-    };
-  </script>
-
-  <!-- Bootstrap: load data then mount app -->
-  <script>
-    // Show "Add to Home Screen" prompt if running in browser (not standalone)
-    if (!window.navigator.standalone) {
-      document.getElementById('add-prompt').style.display = 'block';
-    }
-
     window.addEventListener('DOMContentLoaded', async () => {
+      // Verify the DB bridge is available (set by preload.js)
+      if (!window.portfolioDB) {
+        document.getElementById('loading').innerHTML =
+          '<div style="color:#FF4D6A;font-size:14px;padding:20px;text-align:center">Error: Database bridge not found.<br/>Make sure you launched via Electron.</div>';
+        return;
+      }
+
       try {
+        // Load all data from SQLite
         const data = await window.portfolioDB.load();
         window.__PORTFOLIO_DATA__ = data;
 
-        // Load app.jsx content — in production this is inlined; in dev it's fetched
-        // For the standalone PWA, app code is inlined below as a Babel script
-        const loading = document.getElementById('loading');
+        // Show DB path
+        const pathEl = document.getElementById('db-path');
+        if (pathEl) pathEl.textContent = '📁 ' + data.dbPath;
 
-        // Trigger Babel transform of inline app script
-        // (the script tag with type="text/babel" injected at end of body)
-        if (loading) loading.style.display = 'none';
+        // Dynamically load the portfolio app script
+        const script = document.createElement('script');
+        script.type = 'text/babel';
+        script.setAttribute('data-type', 'module');
+
+        // Fetch the app source
+        const resp = await fetch('./app.jsx?v=' + Date.now()); // cache-bust
+        const src  = await resp.text();
+        script.textContent = src;
+        document.body.appendChild(script);
 
       } catch (err) {
         document.getElementById('loading').innerHTML =
-          '<div style="color:#FF4D6A;padding:30px;text-align:center;font-size:14px">' +
-          '<div style="font-size:30px;margin-bottom:12px">⚠️</div>' +
-          '<b>Cannot connect to database</b><br><br>' +
-          err.message + '<br><br>' +
-          '<span style="color:#6B7A99;font-size:12px">Check your internet connection and try again</span></div>';
+          `<div style="color:#FF4D6A;font-size:13px;padding:20px;font-family:monospace">
+             <b>Load Error:</b><br/>${err.message}<br/>
+             <pre style="font-size:10px;margin-top:8px;white-space:pre-wrap">${err.stack||''}</pre>
+           </div>`;
       }
     });
   </script>
-
-  <!-- The full portfolio React app (Babel-compiled inline) -->
-  <!-- NOTE: app.jsx content is injected here by the build step -->
-  <!-- For the hosted PWA, this tag loads app.jsx from the same server -->
-  <script type="text/babel" src="app.jsx" data-presets="react"></script>
-
+  <script>
+    // Catch Babel transform errors and React render errors
+    window.addEventListener('error', function(e) {
+      var el = document.getElementById('loading');
+      if (el) {
+        el.style.display = 'flex';
+        el.innerHTML = '<div style="color:#FF4D6A;font-size:13px;padding:20px;font-family:monospace;text-align:left;max-width:90vw">' +
+          '<b>Runtime Error (please screenshot and send):</b><br/><br/>' +
+          '<b>Message:</b> ' + (e.message||'unknown') + '<br/>' +
+          '<b>File:</b> ' + (e.filename||'') + '<br/>' +
+          '<b>Line:</b> ' + e.lineno + ' Col: ' + e.colno + '<br/><br/>' +
+          '<pre style="font-size:10px;white-space:pre-wrap;overflow:auto;max-height:300px">' + 
+          ((e.error&&e.error.stack)||'no stack') + '</pre></div>';
+      }
+    });
+  </script>
 </body>
 </html>
