@@ -585,6 +585,161 @@ function App(){
     }catch(e){console.warn('[dividends] error:',e.message);}
   }
 
+  // ── Screen (God Mode) — multi-factor BUY/SELL scoring engine ────────────────
+  async function fetchScreen(){
+    if(screenLoading) return;
+    setScreenLoading(true);
+    setScreenAI("");
+    const EDGE_URL='https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api';
+    try{
+      const res=await fetch(EDGE_URL,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          action:'screen',
+          holdings:holdings.map(h=>({ticker:h.ticker,mkt:h.mkt,name:h.name,price:h.price}))
+        }),
+      });
+      if(!res.ok){console.warn('[screen] fetch failed:',res.status);setScreenLoading(false);return;}
+      const d=await res.json();
+      const sd=d.screenData||{};
+      setScreenData(sd);
+      setScreenLastRun(new Date());
+
+      // Score every holding
+      const scored=holdings.map(h=>{
+        const s=sd[h.ticker]||{};
+        // --- Valuation ---
+        const effIV=valuations[h.ticker]?.valuations?.average||h.intrinsic||0;
+        const upside=effIV>0&&h.price>0?((effIV-h.price)/h.price)*100:0;
+        const overvalued=effIV>0&&h.price>0?((h.price-effIV)/effIV)*100:0;
+        // --- Portfolio ---
+        const gainPct=h.avgCost>0?((h.price-h.avgCost)/h.avgCost)*100:0;
+        // --- Alert signals ---
+        const insiderBuy=alertData.some(a=>a.ticker===h.ticker&&a.type==="INSIDER_BUY");
+        const insiderSell=alertData.some(a=>a.ticker===h.ticker&&a.type==="INSIDER_SELL");
+        const senateBuy=senateData.some(s2=>s2.ticker===h.ticker&&s2.action==="BUY");
+        // --- RSI ---
+        const rsi=s.rsi||50;
+        // --- Fundamentals ---
+        const revGrowth=s.revenueGrowth||null;
+        const de=s.debtToEquity||null;
+        const analystBuyPct=s.analystBuyPct||null;
+
+        // ── BUY SCORE ──────────────────────────────────────────────────
+        let buyScore=0; const buySignals=[];
+        // Intrinsic value upside (25 pts)
+        if(upside>=30){buyScore+=25;buySignals.push({label:`IV +${upside.toFixed(0)}% upside`,pts:25,strength:"strong"});}
+        else if(upside>=15){buyScore+=15;buySignals.push({label:`IV +${upside.toFixed(0)}% upside`,pts:15,strength:"medium"});}
+        else if(upside>=5){buyScore+=8;buySignals.push({label:`IV +${upside.toFixed(0)}% upside`,pts:8,strength:"weak"});}
+        // Moat (15 pts)
+        if(h.moat==="Wide"){buyScore+=15;buySignals.push({label:"Wide moat",pts:15,strength:"strong"});}
+        else if(h.moat==="Narrow"){buyScore+=8;buySignals.push({label:"Narrow moat",pts:8,strength:"medium"});}
+        // RSI oversold (15 pts)
+        if(rsi<30){buyScore+=15;buySignals.push({label:`RSI ${rsi} (oversold)`,pts:15,strength:"strong"});}
+        else if(rsi<40){buyScore+=10;buySignals.push({label:`RSI ${rsi} (low)`,pts:10,strength:"medium"});}
+        else if(rsi<50){buyScore+=4;buySignals.push({label:`RSI ${rsi}`,pts:4,strength:"weak"});}
+        // Insider buy (15 pts)
+        if(insiderBuy){buyScore+=15;buySignals.push({label:"Insider buying",pts:15,strength:"strong"});}
+        // Senate buy (10 pts)
+        if(senateBuy){buyScore+=10;buySignals.push({label:"Senate buy signal",pts:10,strength:"strong"});}
+        // Revenue growth (10 pts)
+        if(revGrowth!==null){
+          if(revGrowth>=20){buyScore+=10;buySignals.push({label:`Rev growth ${revGrowth.toFixed(0)}%`,pts:10,strength:"strong"});}
+          else if(revGrowth>=10){buyScore+=6;buySignals.push({label:`Rev growth ${revGrowth.toFixed(0)}%`,pts:6,strength:"medium"});}
+          else if(revGrowth>0){buyScore+=2;buySignals.push({label:`Rev growth ${revGrowth.toFixed(0)}%`,pts:2,strength:"weak"});}
+        }
+        // Low D/E (5 pts)
+        if(de!==null&&de<0.3){buyScore+=5;buySignals.push({label:`D/E ${de.toFixed(1)}`,pts:5,strength:"strong"});}
+        else if(de!==null&&de<0.7){buyScore+=3;buySignals.push({label:`D/E ${de.toFixed(1)}`,pts:3,strength:"medium"});}
+        // Analyst consensus (5 pts)
+        if(analystBuyPct!==null&&analystBuyPct>=70){buyScore+=5;buySignals.push({label:`${analystBuyPct.toFixed(0)}% analyst buy`,pts:5,strength:"strong"});}
+        else if(analystBuyPct!==null&&analystBuyPct>=50){buyScore+=3;buySignals.push({label:`${analystBuyPct.toFixed(0)}% analyst buy`,pts:3,strength:"medium"});}
+
+        // ── SELL SCORE ─────────────────────────────────────────────────
+        let sellScore=0; const sellSignals=[];
+        // Overvalued vs IV (25 pts)
+        if(overvalued>=50){sellScore+=25;sellSignals.push({label:`${overvalued.toFixed(0)}% above IV`,pts:25,strength:"strong"});}
+        else if(overvalued>=30){sellScore+=18;sellSignals.push({label:`${overvalued.toFixed(0)}% above IV`,pts:18,strength:"strong"});}
+        else if(overvalued>=15){sellScore+=10;sellSignals.push({label:`${overvalued.toFixed(0)}% above IV`,pts:10,strength:"medium"});}
+        // RSI overbought (20 pts)
+        if(rsi>80){sellScore+=20;sellSignals.push({label:`RSI ${rsi} (very overbought)`,pts:20,strength:"strong"});}
+        else if(rsi>70){sellScore+=14;sellSignals.push({label:`RSI ${rsi} (overbought)`,pts:14,strength:"strong"});}
+        else if(rsi>65){sellScore+=7;sellSignals.push({label:`RSI ${rsi} (elevated)`,pts:7,strength:"medium"});}
+        // Large unrealized gain (15 pts)
+        if(gainPct>150){sellScore+=15;sellSignals.push({label:`+${gainPct.toFixed(0)}% unrealized gain`,pts:15,strength:"strong"});}
+        else if(gainPct>100){sellScore+=10;sellSignals.push({label:`+${gainPct.toFixed(0)}% unrealized gain`,pts:10,strength:"medium"});}
+        else if(gainPct>75){sellScore+=5;sellSignals.push({label:`+${gainPct.toFixed(0)}% unrealized gain`,pts:5,strength:"weak"});}
+        // Revenue declining (15 pts)
+        if(revGrowth!==null&&revGrowth<-10){sellScore+=15;sellSignals.push({label:`Rev declining ${revGrowth.toFixed(0)}%`,pts:15,strength:"strong"});}
+        else if(revGrowth!==null&&revGrowth<0){sellScore+=8;sellSignals.push({label:`Rev declining ${revGrowth.toFixed(0)}%`,pts:8,strength:"medium"});}
+        // Insider selling (10 pts)
+        if(insiderSell){sellScore+=10;sellSignals.push({label:"Insider selling",pts:10,strength:"strong"});}
+        // High D/E (10 pts)
+        if(de!==null&&de>3){sellScore+=10;sellSignals.push({label:`D/E ${de.toFixed(1)} (high debt)`,pts:10,strength:"strong"});}
+        else if(de!==null&&de>2){sellScore+=6;sellSignals.push({label:`D/E ${de.toFixed(1)} (elevated debt)`,pts:6,strength:"medium"});}
+        // No moat (5 pts)
+        if(h.moat==="None"||!h.moat){sellScore+=5;sellSignals.push({label:"No moat",pts:5,strength:"weak"});}
+
+        return{h,buyScore,buySignals,sellScore,sellSignals,
+          rsi,upside,overvalued,gainPct,revGrowth,de,analystBuyPct,
+          effIV,insiderBuy,senateBuy,mom1m:s.mom1m,mom3m:s.mom3m,
+          pctFromHi:s.pctFromHi,pctFromLo:s.pctFromLo};
+      });
+
+      // Sort by selected mode score descending
+      scored.sort((a,b)=>screenMode==="BUY"?b.buyScore-a.buyScore:b.sellScore-a.sellScore);
+      setScreenResults(scored);
+
+      // Generate Claude AI allocation narrative
+      const budget=parseFloat(screenBudget)||0;
+      if(budget>0){
+        setScreenAILoad(true);
+        const top=scored.slice(0,8);
+        const prompt=screenMode==="BUY"
+          ?`I am a Singapore investor with S$${budget.toLocaleString()} to deploy. Based on this multi-factor analysis of my portfolio holdings, recommend the best allocation:
+
+${top.map((r,i)=>`${i+1}. ${r.h.ticker} (${r.h.name}) — Buy Score: ${r.buyScore}/100
+   Signals: ${r.buySignals.map(s=>s.label).join(', ')||'None'}
+   Price: S$${r.h.price} | IV: ${r.effIV>0?'S$'+r.effIV.toFixed(2):'N/A'} | Upside: ${r.upside.toFixed(0)}%
+   RSI: ${r.rsi} | Rev Growth: ${r.revGrowth!==null?r.revGrowth.toFixed(0)+'%':'N/A'} | D/E: ${r.de!==null?r.de.toFixed(1):'N/A'}`).join('
+
+')}
+
+Give a concise allocation recommendation: how much to put in each top pick, why, and any concentration warnings. Max 200 words. No disclaimers.`
+          :`I am a Singapore investor targeting S$${budget.toLocaleString()} cash-out. Based on this analysis of my portfolio, recommend what to sell:
+
+${top.map((r,i)=>`${i+1}. ${r.h.ticker} (${r.h.name}) — Sell Score: ${r.sellScore}/100
+   Signals: ${r.sellSignals.map(s=>s.label).join(', ')||'None'}
+   Gain: +${r.gainPct.toFixed(0)}% | RSI: ${r.rsi} | Overvalued: ${r.overvalued.toFixed(0)}%
+   Position value: S$${toSGDlive(r.h.price*r.h.shares,r.h.mkt).toFixed(0)}`).join('
+
+')}
+
+Recommend which to sell, how much, and the sequencing. Max 200 words. No disclaimers.`;
+
+        try{
+          const aiRes=await fetch('https://api.anthropic.com/v1/messages',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({
+              model:'claude-sonnet-4-20250514',
+              max_tokens:1000,
+              messages:[{role:'user',content:prompt}],
+            }),
+          });
+          if(aiRes.ok){
+            const aiD=await aiRes.json();
+            const text=(aiD.content||[]).map((c)=>c.type==="text"?c.text:"").join("");
+            setScreenAI(text);
+          }
+        }catch(e){console.warn('[screen AI]',e.message);}
+        setScreenAILoad(false);
+      }
+    }catch(e){console.warn('[screen] error:',e.message);}
+    setScreenLoading(false);
+  }
+
   // ── Alert scanner — insider buys, short squeeze, volume spikes ──────────────
   async function fetchAlerts(){
     if(alertLoading) return;
@@ -907,7 +1062,17 @@ function App(){
   }
 
   // ── Alerts Tab state ──────────────────────────────────────────────────────
-  const [alertData,setAlertData]=useState([]);      // array of alert objects
+  const [alertData,setAlertData]=useState([]);
+
+  // ── Screen (God Mode) Tab state ────────────────────────────────────────────
+  const [screenData,setScreenData]=useState({});     // {TICKER: {rsi, mom1m, revenueGrowth, ...}}
+  const [screenLoading,setScreenLoading]=useState(false);
+  const [screenLastRun,setScreenLastRun]=useState(null);
+  const [screenMode,setScreenMode]=useState("BUY");  // "BUY" or "SELL"
+  const [screenBudget,setScreenBudget]=useState(""); // target funds SGD
+  const [screenResults,setScreenResults]=useState([]);
+  const [screenAI,setScreenAI]=useState("");         // Claude AI narrative
+  const [screenAILoad,setScreenAILoad]=useState(false);      // array of alert objects
   const [alertLoading,setAlertLoading]=useState(false);
   const [alertLastRun,setAlertLastRun]=useState(null); // Date of last scan
 
@@ -1575,7 +1740,7 @@ function App(){
     return(
       <>
         <div style={{display:"flex",gap:5,marginBottom:14,overflowX:"auto"}}>
-          {[["performers","Performers"],["senate","Senate"],["buffett","Buffett"]].map(([id,lbl])=>(
+          {[["performers","Performers"],["buffett","Buffett"],["screen","🎯 Screen"]].map(([id,lbl])=>(
             <button key={id} style={{...pill(insightTab===id),whiteSpace:"nowrap",flexShrink:0}} onClick={()=>setInsightTab(id)}>{lbl}</button>
           ))}
         </div>
@@ -1712,6 +1877,7 @@ function App(){
             })}
           </>
         )}
+        {insightTab==="screen"&&<ScreenView/>}
       </>
     );
   }
@@ -2207,7 +2373,256 @@ function App(){
     setExporting(false);
   }
 
-  // ── Alerts Tab ──────────────────────────────────────────────────────────────
+  // ── Screen (God Mode) Tab ───────────────────────────────────────────────────
+  function ScreenView(){
+    const budget=parseFloat(screenBudget)||0;
+    const modeColor=screenMode==="BUY"?C.green:C.red;
+    const topResults=screenResults.slice(0,10);
+
+    // Strength dot color
+    const strengthCol=s=>s==="strong"?C.green:s==="medium"?C.gold:C.muted;
+
+    return(
+      <>
+        {/* Header */}
+        <div style={{...card,background:"#0A0F1A",border:`1px solid ${modeColor}30`,marginBottom:10}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+            <div>
+              <div style={{fontSize:14,fontWeight:800,color:modeColor,letterSpacing:"0.06em",marginBottom:2}}>
+                🎯 GOD MODE SCREENER
+              </div>
+              <div style={{fontSize:12,color:C.muted}}>
+                7-factor scoring · RSI · Fundamentals · Intrinsic value · Insider · Senate
+              </div>
+              {screenLastRun&&(
+                <div style={{fontSize:11,color:C.muted,marginTop:2}}>
+                  Last scan: {screenLastRun.toLocaleTimeString("en-SG",{hour:"2-digit",minute:"2-digit"})}
+                  {" · "}{screenResults.length} stocks scored
+                </div>
+              )}
+            </div>
+            <button onClick={fetchScreen} disabled={screenLoading} style={{
+              padding:"9px 15px",borderRadius:9,border:`1px solid ${modeColor}66`,
+              background:screenLoading?C.surface:modeColor+"18",
+              color:screenLoading?C.muted:modeColor,
+              fontSize:12,fontWeight:700,cursor:screenLoading?"not-allowed":"pointer",flexShrink:0,
+            }}>{screenLoading?"↻ Scanning...":"🔍 Run Screen"}</button>
+          </div>
+
+          {/* BUY / SELL toggle */}
+          <div style={{display:"flex",gap:8,marginBottom:10}}>
+            {["BUY","SELL"].map(m=>(
+              <button key={m} onClick={()=>{setScreenMode(m);if(screenResults.length>0){
+                const s=[...screenResults];
+                s.sort((a,b)=>m==="BUY"?b.buyScore-a.buyScore:b.sellScore-a.sellScore);
+                setScreenResults(s);setScreenAI("");
+              }}} style={{
+                flex:1,padding:"9px",borderRadius:8,fontSize:13,fontWeight:700,cursor:"pointer",
+                background:screenMode===m?(m==="BUY"?C.green:C.red)+"22":C.surface,
+                color:screenMode===m?(m==="BUY"?C.green:C.red):C.muted,
+                border:`1px solid ${screenMode===m?(m==="BUY"?C.green:C.red):C.border}`,
+              }}>{m==="BUY"?"📈 BUY Candidates":"📉 SELL Candidates"}</button>
+            ))}
+          </div>
+
+          {/* Target fund input */}
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{fontSize:12,color:C.muted,flexShrink:0}}>
+              {screenMode==="BUY"?"💰 Deploy":"💵 Cash out"} S$
+            </div>
+            <input
+              type="number"
+              placeholder={screenMode==="BUY"?"e.g. 50000":"e.g. 30000"}
+              value={screenBudget}
+              onChange={e=>setScreenBudget(e.target.value)}
+              style={{
+                flex:1,background:C.surface,border:`1px solid ${C.border}`,
+                color:C.text,borderRadius:8,padding:"8px 12px",fontSize:13,
+                outline:"none",
+              }}
+            />
+            <div style={{fontSize:11,color:C.muted,flexShrink:0}}>SGD</div>
+          </div>
+          {budget>0&&<div style={{fontSize:11,color:modeColor,marginTop:5}}>
+            {screenMode==="BUY"?`Allocating S$${budget.toLocaleString()} across top picks`:`Targeting S$${budget.toLocaleString()} cash-out`}
+          </div>}
+        </div>
+
+        {/* Scoring legend */}
+        <div style={{...card,marginBottom:10,padding:"10px 14px"}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.muted,marginBottom:7,textTransform:"uppercase",letterSpacing:"0.06em"}}>
+            {screenMode==="BUY"?"BUY Score Signals":"SELL Score Signals"}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 10px",fontSize:11,color:C.muted}}>
+            {screenMode==="BUY"?[
+              ["IV upside > 30%","25pts"],["Wide moat","15pts"],
+              ["RSI < 30 oversold","15pts"],["Insider buying","15pts"],
+              ["Senate buy","10pts"],["Revenue growth > 20%","10pts"],
+              ["Low D/E < 0.3","5pts"],["Analyst ≥ 70% buy","5pts"],
+            ]:[
+              ["Price 50%+ above IV","25pts"],["RSI > 80 overbought","20pts"],
+              ["Gain > 150%","15pts"],["Revenue declining","15pts"],
+              ["Insider selling","10pts"],["D/E > 3 (high debt)","10pts"],
+              ["No moat","5pts"],["",""],
+            ].map(([label,pts],i)=>label?(
+              <div key={i} style={{display:"flex",justifyContent:"space-between"}}>
+                <span>{label}</span><span style={{fontWeight:700,color:modeColor}}>{pts}</span>
+              </div>
+            ):null)}
+          </div>
+        </div>
+
+        {/* Not yet scanned */}
+        {!screenLastRun&&!screenLoading&&(
+          <div style={{...card,textAlign:"center",padding:"36px 16px"}}>
+            <div style={{fontSize:36,marginBottom:10}}>🎯</div>
+            <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>Ready to screen</div>
+            <div style={{fontSize:13,color:C.muted,marginBottom:8}}>
+              Choose BUY or SELL mode, set your target amount, then tap Run Screen.
+            </div>
+            <div style={{fontSize:12,color:C.muted}}>
+              ⏱ Scans all {holdings.length} holdings — ~45–90s for full analysis
+            </div>
+          </div>
+        )}
+
+        {/* Loading */}
+        {screenLoading&&(
+          <div style={{...card,padding:"28px 16px"}}>
+            <div style={{fontSize:13,color:modeColor,fontWeight:700,marginBottom:8}}>↻ Running multi-factor screen...</div>
+            {[
+              "Fetching RSI from Yahoo Finance price history",
+              "Computing 14-day Relative Strength Index",
+              "Pulling revenue growth + D/E from Finnhub",
+              "Reading analyst consensus ratings",
+              "Cross-referencing insider activity + senate signals",
+              "Scoring all "+holdings.length+" holdings...",
+            ].map((step,i)=>(
+              <div key={i} style={{fontSize:12,color:C.muted,marginBottom:3,paddingLeft:8}}>→ {step}</div>
+            ))}
+          </div>
+        )}
+
+        {/* Claude AI allocation */}
+        {(screenAI||screenAILoad)&&(
+          <div style={{...card,background:"#080D18",border:`1px solid ${C.accent}30`,marginBottom:10}}>
+            <div style={{fontSize:12,fontWeight:700,color:C.accent,marginBottom:8}}>
+              🤖 AI ALLOCATION RECOMMENDATION
+            </div>
+            {screenAILoad?(
+              <div style={{fontSize:13,color:C.muted}}>↻ Generating allocation strategy...</div>
+            ):(
+              <div style={{fontSize:13,color:C.text,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{screenAI}</div>
+            )}
+          </div>
+        )}
+
+        {/* Results */}
+        {topResults.length>0&&!screenLoading&&(
+          <>
+            <div style={{fontSize:12,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>
+              Top {topResults.length} {screenMode==="BUY"?"Buy":"Sell"} Candidates · All {screenResults.length} holdings scored
+            </div>
+            {topResults.map((r,rank)=>{
+              const score=screenMode==="BUY"?r.buyScore:r.sellScore;
+              const signals=screenMode==="BUY"?r.buySignals:r.sellSignals;
+              const scoreColor=score>=60?modeColor:score>=35?C.gold:C.muted;
+              const scoreBar=Math.min(score,100);
+              const sgdVal=toSGDlive(r.h.price*r.h.shares,r.h.mkt);
+              const gainPct=r.gainPct;
+
+              return(
+                <div key={r.h.ticker}
+                  onClick={()=>{setSel(r.h);setDetailPeriod("6m");}}
+                  style={{...card,cursor:"pointer",marginBottom:10,
+                    borderLeft:`4px solid ${scoreColor}`,
+                    background:rank===0?scoreColor+"08":C.card,
+                  }}>
+                  {/* Stock header */}
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                    <div>
+                      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+                        <span style={{fontSize:12,fontWeight:700,color:C.muted,width:18,textAlign:"center"}}>#{rank+1}</span>
+                        <span style={{fontWeight:800,fontSize:17}}>{r.h.ticker}</span>
+                        <Chip mkt={r.h.mkt}/>
+                        {r.h.moat&&r.h.moat!=="None"&&<Bdg label={r.h.moat+" Moat"} bg={r.h.moat==="Wide"?"#1A2E1A":"#2A2A1A"} color={r.h.moat==="Wide"?C.green:C.gold}/>}
+                        {r.insiderBuy&&<Bdg label="Insider Buy" bg={C.green+"18"} color={C.green}/>}
+                        {r.senateBuy&&<Bdg label="Senate Buy" bg={C.accent+"18"} color={C.accent}/>}
+                      </div>
+                      <div style={{fontSize:12,color:C.muted,paddingLeft:24}}>{r.h.name?.slice(0,30)}</div>
+                    </div>
+                    <div style={{textAlign:"right",flexShrink:0}}>
+                      <div style={{fontSize:22,fontWeight:900,color:scoreColor}}>{score}</div>
+                      <div style={{fontSize:10,color:C.muted}}>/100 pts</div>
+                    </div>
+                  </div>
+
+                  {/* Score bar */}
+                  <div style={{height:4,borderRadius:2,background:C.border,marginBottom:10,overflow:"hidden"}}>
+                    <div style={{width:`${scoreBar}%`,height:"100%",background:scoreColor,borderRadius:2,transition:"width 0.5s"}}/>
+                  </div>
+
+                  {/* Key metrics grid */}
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"5px 8px",marginBottom:8}}>
+                    <div style={{background:C.surface,borderRadius:6,padding:"5px 7px",textAlign:"center"}}>
+                      <div style={{fontSize:10,color:C.muted}}>RSI-14</div>
+                      <div style={{fontSize:13,fontWeight:700,
+                        color:r.rsi<40?C.green:r.rsi>70?C.red:C.text
+                      }}>{r.rsi}</div>
+                    </div>
+                    <div style={{background:C.surface,borderRadius:6,padding:"5px 7px",textAlign:"center"}}>
+                      <div style={{fontSize:10,color:C.muted}}>{screenMode==="BUY"?"IV Upside":"Overvalued"}</div>
+                      <div style={{fontSize:13,fontWeight:700,
+                        color:screenMode==="BUY"?(r.upside>20?C.green:r.upside>0?C.gold:C.red):(r.overvalued>30?C.red:r.overvalued>0?C.gold:C.green)
+                      }}>{screenMode==="BUY"?(r.upside>0?"+":"")+r.upside.toFixed(0):r.overvalued.toFixed(0)}%</div>
+                    </div>
+                    <div style={{background:C.surface,borderRadius:6,padding:"5px 7px",textAlign:"center"}}>
+                      <div style={{fontSize:10,color:C.muted}}>Rev Growth</div>
+                      <div style={{fontSize:13,fontWeight:700,
+                        color:r.revGrowth===null?C.border:r.revGrowth>10?C.green:r.revGrowth>0?C.gold:C.red
+                      }}>{r.revGrowth!==null?r.revGrowth.toFixed(0)+"%":"—"}</div>
+                    </div>
+                    <div style={{background:C.surface,borderRadius:6,padding:"5px 7px",textAlign:"center"}}>
+                      <div style={{fontSize:10,color:C.muted}}>My Gain</div>
+                      <div style={{fontSize:13,fontWeight:700,
+                        color:gainPct>=0?C.green:C.red
+                      }}>{gainPct>=0?"+":""}{gainPct.toFixed(0)}%</div>
+                    </div>
+                  </div>
+
+                  {/* Signal chips */}
+                  {signals.length>0&&(
+                    <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:6}}>
+                      {signals.map((sig,si)=>(
+                        <div key={si} style={{
+                          fontSize:10,padding:"2px 7px",borderRadius:5,
+                          background:strengthCol(sig.strength)+"18",
+                          color:strengthCol(sig.strength),fontWeight:600,
+                          border:`1px solid ${strengthCol(sig.strength)}30`,
+                        }}>{sig.label} <span style={{opacity:0.7}}>+{sig.pts}</span></div>
+                      ))}
+                    </div>
+                  )}
+                  {signals.length===0&&(
+                    <div style={{fontSize:12,color:C.muted}}>No strong {screenMode.toLowerCase()} signals detected</div>
+                  )}
+
+                  {/* Position info */}
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:C.muted,borderTop:`1px solid ${C.border}`,paddingTop:6,marginTop:2}}>
+                    <span>Position: {fmtS(sgdVal)}</span>
+                    <span>{fmtL(r.h.price,r.h.mkt)} · avg cost {fmtL(r.h.avgCost,r.h.mkt)}</span>
+                    <span style={{color:C.muted,fontSize:10}}>Tap to open →</span>
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
+      </>
+    );
+  }
+
+    // ── Alerts Tab ──────────────────────────────────────────────────────────────
   function AlertsView(){
     const SEV_META={
       high:  {col:C.red,   bg:C.red+"14",   icon:"🔴",label:"HIGH"},
