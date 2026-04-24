@@ -151,24 +151,45 @@
       }
     };
 
-    // ── Load app.jsx via Babel ────────────────────────────────────────────────
+    // ── Load app.jsx via Babel Web Worker (non-blocking) ─────────────────────
     try {
       msg.textContent = 'Loading app...';
       const resp = await fetch('./app.jsx?v=' + Date.now());
       if (!resp.ok) throw new Error('Failed to fetch app.jsx: ' + resp.status);
       const source = await resp.text();
       msg.textContent = 'Compiling...';
-      const script = document.createElement('script');
-      script.type = 'text/babel';
-      script.setAttribute('data-type', 'module');
-      script.setAttribute('data-presets', 'react');
-      script.textContent = source;
-      document.body.appendChild(script);
+
+      // Compile in a Web Worker so main thread stays responsive
+      await new Promise((resolve, reject) => {
+        const worker = new Worker('./babel-worker.js');
+        worker.onmessage = function(e) {
+          worker.terminate();
+          if (!e.data.ok) {
+            reject(new Error('Babel error: ' + e.data.error));
+            return;
+          }
+          try {
+            msg.textContent = 'Starting...';
+            const script = document.createElement('script');
+            script.textContent = e.data.code;
+            document.body.appendChild(script);
+            resolve();
+          } catch(runErr) {
+            reject(runErr);
+          }
+        };
+        worker.onerror = function(e) {
+          worker.terminate();
+          reject(new Error('Worker error: ' + e.message));
+        };
+        worker.postMessage(source);
+      });
+
     } catch(err) {
       document.getElementById('loading').innerHTML =
-        '<div style="color:#FF5577;font-size:13px;padding:24px;font-family:monospace;text-align:left;max-width:90vw">' +
-        '<b>Load Error:</b><br><br>' + err.message +
-        '<br><br><pre style="font-size:10px;white-space:pre-wrap">' +
+        '<div style="color:#FF5577;font-size:13px;padding:24px;font-family:monospace;text-align:left;max-width:90vw;overflow:auto">' +
+        '<b>🔴 Load Error — Screenshot and send to developer:</b><br><br>' + err.message +
+        '<br><br><pre style="font-size:10px;white-space:pre-wrap;color:#FF8899">' +
         (err.stack||'') + '</pre></div>';
     }
   })();
