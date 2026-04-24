@@ -509,6 +509,9 @@ function App(){
   async function fetchDividends(currentHoldings){
     if(!currentHoldings||currentHoldings.length===0) return;
     const EDGE_URL='https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api';
+    // Read live budget from input ref (avoids needing state sync before scan)
+    const liveBudget=budgetInputRef.current?budgetInputRef.current.value:screenBudget;
+    if(liveBudget&&liveBudget!==screenBudget) setScreenBudget(liveBudget);
     try{
       const tickers=currentHoldings.map(h=>h.ticker);
       const res=await fetch(EDGE_URL,{
@@ -627,7 +630,7 @@ function App(){
       scored.sort((a,b)=>screenMode==="BUY"?b.buyScore-a.buyScore:b.sellScore-a.sellScore);
       setScreenResults(scored);
 
-      const budget=parseFloat(screenBudget)||0;
+      const budget=parseFloat(budgetInputRef.current?.value||screenBudget)||0;
       if(budget>0){
         setScreenAILoad(true);
         const top=scored.slice(0,8);
@@ -968,6 +971,7 @@ function App(){
   const [screenLastRun,setScreenLastRun]=useState(null);
   const [screenMode,setScreenMode]=useState("BUY");  // "BUY" or "SELL"
   const [screenBudget,setScreenBudget]=useState(""); // target funds SGD
+  const budgetInputRef=React.useRef(null); // read budget without state update
   const [screenResults,setScreenResults]=useState([]);
   const [screenAI,setScreenAI]=useState("");         // Claude AI narrative
   const [screenAILoad,setScreenAILoad]=useState(false);      // array of alert objects
@@ -2265,16 +2269,16 @@ function App(){
               {screenMode==="BUY"?"💰 Deploy":"💵 Cash out"} S$
             </div>
             <input
+              ref={budgetInputRef}
               type="number"
               placeholder={screenMode==="BUY"?"e.g. 50000":"e.g. 30000"}
               defaultValue={screenBudget}
               onBlur={e=>setScreenBudget(e.target.value)}
-              onChange={e=>setScreenBudget(e.target.value)}
               key={screenMode}
               style={{
                 flex:1,background:C.surface,border:`1px solid ${C.border}`,
                 color:C.text,borderRadius:8,padding:"8px 12px",fontSize:13,
-                outline:"none",WebkitAppearance:"none",
+                outline:"none",WebkitAppearance:"none",MozAppearance:"textfield",
               }}
             />
             <div style={{fontSize:11,color:C.muted,flexShrink:0}}>SGD</div>
