@@ -428,8 +428,12 @@ function App(){
     window.portfolioDB.load().then(data=>{
       setLoadMsg('Got data: '+JSON.stringify({h:(data.holdings||[]).length,t:(data.trades||[]).length}));
       if(data.holdings&&data.holdings.length>0){
-        setHoldings(data.holdings);
-        setTrades(data.trades||[]);
+        const loadedTrades=data.trades||[];
+        // Rebuild holdings from trades to ensure net shares + avgCost are accurate
+        // Falls back to DB holdings for stocks with no trade records
+        const rebuiltOnLoad=rebuildHoldingsFromTrades(loadedTrades, data.holdings);
+        setHoldings(rebuiltOnLoad.length>0?rebuiltOnLoad:data.holdings);
+        setTrades(loadedTrades);
         const fb={};
         (data.trades||[]).filter(t=>t.type==='BUY').forEach(t=>{
           if(!fb[t.ticker]||t.date<fb[t.ticker])fb[t.ticker]=t.date;
@@ -1258,9 +1262,9 @@ function App(){
 
   function rebuildHoldingsFromTrades(tradeList, currentHoldings){
     const curH=currentHoldings||holdings;
+    // Build metadata from current holdings (source of truth for non-trade fields)
     const meta={};
-    ALL_H.forEach(h=>{meta[h.ticker]={...h};});
-    curH.forEach(h=>{if(!meta[h.ticker])meta[h.ticker]={...h};});
+    curH.forEach(h=>{meta[h.ticker]={...h};});
 
     const buyMap={};
     tradeList.filter(t=>t.type==="BUY").forEach(t=>{
@@ -1273,8 +1277,12 @@ function App(){
       sellMap[t.ticker].push(t);
     });
 
-    const allTickers=new Set([...Object.keys(buyMap),...Object.keys(sellMap)]);
-    ALL_H.forEach(h=>allTickers.add(h.ticker));
+    // Include ALL tickers: those with trades AND those with no trades (manually entered)
+    const allTickers=new Set([
+      ...Object.keys(buyMap),
+      ...Object.keys(sellMap),
+      ...curH.map(h=>h.ticker), // preserve holdings with no trades
+    ]);
 
     const rebuilt=[];
     allTickers.forEach(ticker=>{
@@ -1282,13 +1290,21 @@ function App(){
       const sells=sellMap[ticker]||[];
       const baseH=meta[ticker];
 
+      // No trades at all: keep holding as-is (manually entered position)
+      if(buys.length===0&&sells.length===0){
+        if(baseH) rebuilt.push({...baseH});
+        return;
+      }
+
       let totalBuyShares=0,totalBuyCost=0;
       buys.forEach(b=>{totalBuyShares+=b.shares;totalBuyCost+=b.shares*b.price;});
       const totalSellShares=sells.reduce((s,t)=>s+t.shares,0);
       const netShares=totalBuyShares-totalSellShares;
 
-      if(netShares<=0)return; // fully sold, skip
+      if(netShares<=0)return; // fully sold out
 
+      // Weighted average cost (WAVG): total buy cost / total buy shares
+      // Avg cost is unchanged by sells — remaining shares keep same avg cost
       const computedAvgCost=totalBuyShares>0?totalBuyCost/totalBuyShares:baseH?.avgCost||0;
 
       if(baseH){
@@ -1298,8 +1314,9 @@ function App(){
           avgCost:parseFloat(computedAvgCost.toFixed(4)),
         });
       } else {
+        // New ticker from trades not yet in holdings
         rebuilt.push({
-          id:Date.now()+Math.random(),ticker,name:ticker,mkt:"US",
+          id:Date.now()+Math.random(),ticker,name:ticker,mkt:buys[0]?.mkt||"US",
           sector:"Technology",msStyle:"Large Blend",
           shares:netShares,avgCost:parseFloat(computedAvgCost.toFixed(4)),
           price:computedAvgCost,intrinsic:computedAvgCost*1.1,
@@ -1309,7 +1326,6 @@ function App(){
     });
     return rebuilt;
   }
-
   function submitTrade(forceSubmit=false){
     const {ticker,type,date,price,shares,mkt,ccy}=tradeForm;
     if(!ticker||!price||!shares||!date)return;
