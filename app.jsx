@@ -1333,7 +1333,7 @@ function App(){
   function parseBrokerMsg(text){
     const t=text.trim();
     const result={};
-    const buyM=t.match(/\bYour\s+(Buy|Sell)\b/i);
+    const buyM=t.match(/\bYour\s+(?:\w+\s+)?(Buy|Sell)\b/i);
     if(buyM) result.type=buyM[1].toUpperCase();
     const nameM=t.match(/Ord Sh,\s+(.+?)\s+\((\w{2,3})\)/i);
     if(nameM){result.companyName=nameM[1].trim();result.mktCode=nameM[2].toUpperCase();}
