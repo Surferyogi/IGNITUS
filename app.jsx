@@ -429,20 +429,30 @@ function App(){
       setLoadMsg('Got data: '+JSON.stringify({h:(data.holdings||[]).length,t:(data.trades||[]).length}));
       if(data.holdings&&data.holdings.length>0){
         const loadedTrades=data.trades||[];
-        // Recalculate profit for historical SELL trades that have profit=0 or null
-        // Uses weighted average cost of all prior BUY trades for that ticker
-        const tradesWithProfit=loadedTrades.map(t=>{
-          if(t.type!=="SELL") return t;
-          if(t.profit!=null&&t.profit!==0) return t; // already has valid profit
-          // Compute from buys before this sell (sorted by date)
-          const priorBuys=loadedTrades.filter(b=>
-            b.type==="BUY" && b.ticker===t.ticker && b.date<=t.date
-          );
-          const totBuyShares=priorBuys.reduce((s,b)=>s+b.shares,0);
-          const totBuyCost=priorBuys.reduce((s,b)=>s+b.shares*b.price,0);
-          if(totBuyShares===0) return t;
-          const avgCost=totBuyCost/totBuyShares;
-          return {...t, profit:parseFloat(((t.price-avgCost)*t.shares).toFixed(2))};
+        // Recalculate profits using running weighted-average-cost (WAVG) simulation
+        // Processes trades chronologically per ticker, tracking the live avg cost
+        // This gives the CORRECT avg cost at the time of each sell (not simple avg of all buys)
+        const profitMap={};  // ticker -> {curShares, curAvg}
+        const tradesSorted=[...loadedTrades].sort((a,b)=>a.date.localeCompare(b.date));
+        const tradesWithProfit=tradesSorted.map(t=>{
+          if(!profitMap[t.ticker]) profitMap[t.ticker]={curShares:0,curAvg:0};
+          const pos=profitMap[t.ticker];
+          if(t.type==="BUY"){
+            // Update running avg cost: weighted blend of existing + new shares
+            pos.curAvg=(pos.curShares*pos.curAvg+t.shares*t.price)/(pos.curShares+t.shares);
+            pos.curShares+=t.shares;
+            return t;
+          } else {
+            // SELL: profit = (sellPrice - avgCostAtTimeOfSell) × shares
+            // Only recalculate if profit is 0 or null (preserve user-corrected values)
+            const needsCalc=(t.profit===0||t.profit==null);
+            const profit=needsCalc&&pos.curAvg>0
+              ?parseFloat(((t.price-pos.curAvg)*t.shares).toFixed(2))
+              :t.profit;
+            pos.curShares=Math.max(0,pos.curShares-t.shares);
+            // avg cost unchanged after sell (WAVG method)
+            return {...t,profit};
+          }
         });
         // Rebuild holdings from trades to ensure net shares + avgCost are accurate
         const rebuiltOnLoad=rebuildHoldingsFromTrades(tradesWithProfit, data.holdings);
@@ -1385,15 +1395,28 @@ function App(){
       newTrades=trades.map(t=>t.id===editTradeId?{...t,ticker:tU,type,date,price:p,shares:s,mkt,ccy,profit:type==="SELL"?editProfit:undefined}:t);
       setEditTradeId(null);
     } else {
-      // Compute profit for SELL: (sellPrice - avgCostBefore) × shares
+      // Compute profit for SELL: simulate running WAVG to get avg cost at time of this sell
       const existH=holdings.find(h=>h.ticker===tU);
       let profit=undefined;
-      if(type==="SELL"&&existH){
-        const buysBefore=trades.filter(t=>t.ticker===tU&&t.type==="BUY");
-        const totalBuyShares=buysBefore.reduce((s,t)=>s+t.shares,0);
-        const totalBuyCost=buysBefore.reduce((s,t)=>s+t.shares*t.price,0);
-        const avgCostBefore=totalBuyShares>0?totalBuyCost/totalBuyShares:existH.avgCost;
-        profit=parseFloat(((p-avgCostBefore)*s).toFixed(2));
+      if(type==="SELL"){
+        // Use the holding's current avgCost (already reflects all prior buys/sells via WAVG)
+        // This is the most accurate avg cost right before this sell
+        const avgCostNow=existH?.avgCost||0;
+        if(avgCostNow>0){
+          profit=parseFloat(((p-avgCostNow)*s).toFixed(2));
+        } else {
+          // Fallback: simulate from trades if holding not found
+          const allBuysSorted=trades.filter(t=>t.ticker===tU&&t.type==="BUY").sort((a,b)=>a.date.localeCompare(b.date));
+          const allSellsSorted=trades.filter(t=>t.ticker===tU&&t.type==="SELL").sort((a,b)=>a.date.localeCompare(b.date));
+          let runShares=0,runAvg=0;
+          // interleave buys and sells by date
+          const allSorted=[...allBuysSorted,...allSellsSorted].sort((a,b)=>a.date.localeCompare(b.date));
+          allSorted.forEach(t=>{
+            if(t.type==="BUY"){runAvg=(runShares*runAvg+t.shares*t.price)/(runShares+t.shares);runShares+=t.shares;}
+            else{runShares=Math.max(0,runShares-t.shares);}
+          });
+          profit=runAvg>0?parseFloat(((p-runAvg)*s).toFixed(2)):0;
+        }
       }
       const newTrade={id:Date.now(),ticker:tU,type,date,price:p,shares:s,mkt,ccy,
         profit:type==="SELL"?profit:undefined};
