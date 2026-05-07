@@ -42,6 +42,30 @@ const SECTORS=["Technology","Healthcare","Financials","Consumer Disc.","Industri
 const MS_STYLES=["Large Growth","Large Blend","Large Value","Mid Growth","Mid Blend","Mid Value","Small Growth","Small Blend","Small Value"];
 const SCOL=[C.accent,C.green,C.gold,C.purple,"#FF8C42","#FF4D6A","#62D2E8","#C084FC","#FDE68A","#A3E635","#FB923C"];
 
+// Infer correct market code from ticker symbol suffix
+// Used to validate and auto-correct wrong mkt assignments
+function detectMktFromTicker(ticker){
+  if(!ticker) return null;
+  const t=ticker.toUpperCase().trim();
+  if(t.endsWith('.HK'))  return 'CN';  // HSI — HK stocks
+  if(t.endsWith('.SI'))  return 'SG';  // STI — Singapore stocks
+  if(t.endsWith('.T'))   return 'JP';  // Nikkei — Japan stocks
+  if(t.endsWith('.L'))   return 'GB';  // FTSE — UK stocks
+  if(t.endsWith('.AX'))  return 'AU';  // ASX — Australia stocks
+  if(t.endsWith('.PA')||t.endsWith('.DE')||t.endsWith('.AS')||
+     t.endsWith('.MI')||t.endsWith('.F')||t.endsWith('.BR'))
+                         return 'EU';  // European exchanges
+  // No suffix = US market (NYSE/NASDAQ)
+  if(!t.includes('.'))   return 'US';
+  return null; // unknown suffix — don't override
+}
+
+// Infer correct currency from market code
+function mktToCcy(mkt){
+  const MAP={US:'USD',SG:'SGD',CN:'HKD',JP:'JPY',GB:'GBP',EU:'EUR',AU:'AUD'};
+  return MAP[mkt]||null;
+}
+
 const scoreH=h=>{
   const up=((h.intrinsic-h.price)/h.price)*100;
   const iv=Math.max(0,Math.min(10,Math.round(5+up/10)));
@@ -456,8 +480,33 @@ function App(){
         });
         // Rebuild holdings from trades to ensure net shares + avgCost are accurate
         const rebuiltOnLoad=rebuildHoldingsFromTrades(tradesWithProfit, data.holdings);
-        setHoldings(rebuiltOnLoad.length>0?rebuiltOnLoad:data.holdings);
-        setTrades(tradesWithProfit);
+        // Auto-correct wrong market assignments based on ticker suffix
+        // e.g. 0981.HK stored as mkt='US' → corrected to mkt='CN'
+        const mktCorrected=(rebuiltOnLoad.length>0?rebuiltOnLoad:data.holdings).map(h=>{
+          const correctMkt=detectMktFromTicker(h.ticker);
+          if(!correctMkt||h.mkt===correctMkt) return h;
+          const correctCcy=mktToCcy(correctMkt)||h.ccy||'USD';
+          console.warn('[mkt-fix] '+h.ticker+': mkt='+h.mkt+'→'+correctMkt+' ccy→'+correctCcy);
+          return {...h,mkt:correctMkt};
+        });
+        const mktFixCount=mktCorrected.filter((h,i)=>h.mkt!==(rebuiltOnLoad.length>0?rebuiltOnLoad:data.holdings)[i]?.mkt).length;
+        if(mktFixCount>0&&window.portfolioDB){
+          console.log('[mkt-fix] Correcting '+mktFixCount+' holdings with wrong market in DB');
+          window.portfolioDB.updateHoldings(mktCorrected).catch(e=>console.warn('[mkt-fix] DB:',e));
+        }
+        // Also fix trades with wrong mkt
+        const tradesMktFixed=tradesWithProfit.map(t=>{
+          const correctMkt=detectMktFromTicker(t.ticker);
+          if(!correctMkt||t.mkt===correctMkt) return t;
+          return {...t,mkt:correctMkt,ccy:mktToCcy(correctMkt)||t.ccy};
+        });
+        const tradeMktFixCount=tradesMktFixed.filter((t,i)=>t.mkt!==tradesWithProfit[i]?.mkt).length;
+        if(tradeMktFixCount>0&&window.portfolioDB){
+          console.log('[mkt-fix] Correcting '+tradeMktFixCount+' trades with wrong market');
+          window.portfolioDB.updateTrades(tradesMktFixed).catch(e=>console.warn('[mkt-fix] trades DB:',e));
+        }
+        setHoldings(mktCorrected);
+        setTrades(tradeMktFixCount>0?tradesMktFixed:tradesWithProfit);
         const fb={};
         (data.trades||[]).filter(t=>t.type==='BUY').forEach(t=>{
           if(!fb[t.ticker]||t.date<fb[t.ticker])fb[t.ticker]=t.date;
@@ -1356,7 +1405,7 @@ function App(){
       } else {
         // New ticker from trades not yet in holdings
         rebuilt.push({
-          id:Date.now()+Math.random(),ticker,name:ticker,mkt:buys[0]?.mkt||"US",
+          id:Date.now()+Math.random(),ticker,name:ticker,mkt:detectMktFromTicker(ticker)||buys[0]?.mkt||"US",
           sector:"Technology",msStyle:"Large Blend",
           shares:isFullySold?0:netShares,
           avgCost:isFullySold?0:parseFloat(computedAvgCost.toFixed(4)),
@@ -1635,7 +1684,15 @@ function App(){
       const parsed=JSON.parse(clean);
       if(parsed.found){
         setTickerCheck({status:"found",message:parsed.name,suggestions:parsed.suggestions||[],confirmed:parsed.ticker});
-        if(parsed.ticker)setTradeForm(f=>({...f,ticker:parsed.ticker}));
+        if(parsed.ticker){
+          const autoMkt=detectMktFromTicker(parsed.ticker);
+          const autoCcy=autoMkt?mktToCcy(autoMkt):null;
+          setTradeForm(f=>({...f,
+            ticker:parsed.ticker,
+            ...(autoMkt&&f.mkt==='US'?{mkt:autoMkt}:{}),
+            ...(autoCcy&&f.ccy==='USD'?{ccy:autoCcy}:{}),
+          }));
+        }
       } else {
         setTickerCheck({status:"suggestions",message:"Not found. Did you mean:",suggestions:parsed.suggestions||[]});
       }
@@ -2445,7 +2502,16 @@ function App(){
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
               <div>
                 <div style={lbl}>Ticker Symbol {tickerCheck.status==="found"?"(confirmed)":"(manual entry)"}</div>
-                <input ref={tradeRefs.ticker} style={{...iField,borderColor:tickerCheck.status==="found"?C.green:tickerCheck.status==="suggestions"?C.gold:C.border}} placeholder="TICKER" defaultValue={tradeForm.ticker} onBlur={e=>setTradeForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/>
+                <input ref={tradeRefs.ticker} style={{...iField,borderColor:tickerCheck.status==="found"?C.green:tickerCheck.status==="suggestions"?C.gold:C.border}} placeholder="TICKER" defaultValue={tradeForm.ticker} onBlur={e=>{
+                const t=e.target.value.toUpperCase().trim();
+                const autoMkt=detectMktFromTicker(t);
+                const autoCcy=autoMkt?mktToCcy(autoMkt):null;
+                setTradeForm(f=>({...f,
+                  ticker:t,
+                  ...(autoMkt?{mkt:autoMkt}:{}),
+                  ...(autoCcy?{ccy:autoCcy}:{}),
+                }));
+              }}/>
               </div>
               <div>
                 <div style={lbl}>Trade Type</div>
