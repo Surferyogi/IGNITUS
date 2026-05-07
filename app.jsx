@@ -391,6 +391,8 @@ function App(){
   const [pasteText,setPasteText]=useState("");
   const [parsedTrade,setParsedTrade]=useState(null);    // result of parse
   const [parseError,setParseError]=useState("");
+  const [tickerSearchResults,setTickerSearchResults]=useState([]); // results from ticker_search action
+  const [tickerSearchLoading,setTickerSearchLoading]=useState(false);
   const [editTradeId,setEditTradeId]=useState(null);
   const [tradeForm,setTradeForm]=useState({ticker:"",type:"BUY",date:new Date().toISOString().slice(0,10),price:"",shares:"",mkt:"US",ccy:"USD"});
   const [holdingEditId,setHoldingEditId]=useState(null);
@@ -1379,6 +1381,56 @@ function App(){
     return result;
   }
 
+  // ── 3-layer ticker search for broker parse ───────────────────────────────────
+  // Layer 1: Supabase holdings DB (instant, no API)
+  // Layer 2: Yahoo Finance autocomplete via Edge Function (all markets)
+  // Layer 3: User selects from results
+  async function searchTickerForParsed(companyName, mkt){
+    if(!companyName) return;
+    setTickerSearchLoading(true);
+    setTickerSearchResults([]);
+
+    // Layer 1: Search own holdings by name (fuzzy)
+    const lower = companyName.toLowerCase();
+    const ownMatches = holdings
+      .filter(h => {
+        const hn = (h.name||'').toLowerCase();
+        return hn.includes(lower.slice(0,8)) || lower.includes(hn.slice(0,8));
+      })
+      .map(h => ({ticker:h.ticker, name:h.name, mkt:h.mkt, source:'portfolio', score:20}));
+
+    // Layer 2: Yahoo Finance autocomplete via Edge Function
+    const EDGE_URL = 'https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api';
+    let yahooResults = [];
+    try {
+      const res = await fetch(EDGE_URL, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'ticker_search', query:companyName, mkt}),
+      });
+      if(res.ok){
+        const d = await res.json();
+        yahooResults = d.results || [];
+      }
+    } catch(e){ console.warn('[ticker_search]', e.message); }
+
+    // Merge: own holdings first (they're confirmed in portfolio), then Yahoo
+    const seen = new Set();
+    const merged = [...ownMatches, ...yahooResults].filter(r => {
+      if(seen.has(r.ticker)) return false;
+      seen.add(r.ticker);
+      return true;
+    }).slice(0, 6);
+
+    setTickerSearchResults(merged);
+    setTickerSearchLoading(false);
+
+    // Auto-select if exactly 1 result matches the mkt
+    if(merged.length === 1){
+      setParsedTrade(p => ({...p, ticker:merged[0].ticker, matchedName:merged[0].name}));
+    }
+  }
+
   function applyParsedTrade(){
     if(!parsedTrade) return;
     const p=parsedTrade;
@@ -2021,8 +2073,14 @@ function App(){
                 if(!r.type||!r.price||!r.shares){
                   setParseError("Could not parse — check format. Needs: Buy/Sell, Filled price, Filled Qty.");
                   setParsedTrade(null);
+                  setTickerSearchResults([]);
                 } else {
                   setParsedTrade(r);
+                  setTickerSearchResults([]);
+                  // Auto-search for ticker if not matched in portfolio
+                  if(!r.ticker && r.companyName){
+                    searchTickerForParsed(r.companyName, r.mkt);
+                  }
                 }
               }} style={{flex:1,padding:"10px",borderRadius:8,border:`1px solid ${C.gold}`,background:C.gold+"18",color:C.gold,fontSize:13,fontWeight:700,cursor:"pointer"}}>
                 🔍 Parse
@@ -2053,12 +2111,52 @@ function App(){
                   ))}
                 </div>
                 {parsedTrade.ticker?(
-                  <div style={{marginTop:8,fontSize:12,color:C.accent}}>
-                    ✅ Matched portfolio holding: <b>{parsedTrade.ticker}</b> ({parsedTrade.matchedName})
+                  <div style={{marginTop:8,fontSize:12,color:C.green,fontWeight:700}}>
+                    ✅ Matched: <b>{parsedTrade.ticker}</b> — {parsedTrade.matchedName}
                   </div>
                 ):(
-                  <div style={{marginTop:8,fontSize:12,color:C.gold}}>
-                    ⚠ No matching holding found — you can search manually in the trade form
+                  <div style={{marginTop:8}}>
+                    {tickerSearchLoading?(
+                      <div style={{fontSize:12,color:C.gold}}>🔍 Searching ticker symbol...</div>
+                    ):tickerSearchResults.length>0?(
+                      <div>
+                        <div style={{fontSize:12,color:C.gold,fontWeight:700,marginBottom:6}}>
+                          Select ticker for <b>{parsedTrade.companyName}</b>:
+                        </div>
+                        <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                          {tickerSearchResults.map((r,i)=>(
+                            <button key={i} onClick={()=>{
+                              setParsedTrade(p=>({...p,ticker:r.ticker,matchedName:r.name,mkt:r.mkt||p.mkt}));
+                              setTickerSearchResults([]);
+                            }} style={{
+                              display:"flex",justifyContent:"space-between",alignItems:"center",
+                              padding:"8px 10px",borderRadius:7,cursor:"pointer",textAlign:"left",
+                              border:`1px solid ${r.source==="portfolio"?C.green:C.accent}44`,
+                              background:r.source==="portfolio"?C.green+"0A":C.accent+"0A",
+                            }}>
+                              <div>
+                                <span style={{fontWeight:800,fontSize:13,color:r.source==="portfolio"?C.green:C.accent}}>{r.ticker}</span>
+                                <span style={{fontSize:11,color:C.muted,marginLeft:6}}>{r.exchange||r.mkt}</span>
+                                {r.source==="portfolio"&&<span style={{fontSize:10,color:C.green,marginLeft:5,fontWeight:700}}>● IN PORTFOLIO</span>}
+                              </div>
+                              <div style={{fontSize:11,color:C.muted,maxWidth:"55%",textAlign:"right"}}>{r.name}</div>
+                            </button>
+                          ))}
+                        </div>
+                        <button onClick={()=>searchTickerForParsed(parsedTrade.companyName,parsedTrade.mkt)}
+                          style={{marginTop:6,fontSize:11,color:C.muted,background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}}>
+                          Search again
+                        </button>
+                      </div>
+                    ):(
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <div style={{fontSize:12,color:C.gold}}>⚠ No ticker matched — </div>
+                        <button onClick={()=>searchTickerForParsed(parsedTrade.companyName,parsedTrade.mkt)}
+                          style={{fontSize:12,color:C.accent,background:"none",border:`1px solid ${C.accent}`,borderRadius:5,padding:"2px 8px",cursor:"pointer",fontWeight:700}}>
+                          🔍 Search
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
