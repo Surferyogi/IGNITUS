@@ -527,6 +527,8 @@ function App(){
         fetchSenateTrades();
         updateSenateDataSilent(data.holdings);
         fetchMoatData(data.holdings);
+        // Resolve proper names for any holding where name === ticker (unnamed stocks)
+        fetchMissingNames(mktCorrected);
 
       } else {
         setLoadMsg('WARNING: holdings empty. data='+JSON.stringify(data).slice(0,200));
@@ -949,6 +951,44 @@ function App(){
     } catch(e) {
       console.warn('[moat] fetchMoatData silent error:', e.message); // non-critical
     }
+  }
+
+  // ── Resolve proper company names for holdings stored as ticker symbol ────────
+  // Fires on startup whenever name === ticker (unnamed holding)
+  async function fetchMissingNames(currentHoldings){
+    const EDGE_URL='https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api';
+    const unnamed=(currentHoldings||holdings).filter(h=>
+      !h.name||h.name===h.ticker||h.name===''
+    );
+    if(unnamed.length===0){console.log('[names] All holdings have proper names ✅');return;}
+    console.log('[names] Resolving names for',unnamed.length,'unnamed holdings:',unnamed.map(h=>h.ticker).join(', '));
+
+    for(const h of unnamed){
+      try{
+        const res=await fetch(EDGE_URL,{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'ticker_search',query:h.ticker,mkt:h.mkt}),
+        });
+        if(!res.ok) continue;
+        const d=await res.json();
+        const results=d.results||[];
+        // Find best match: exact ticker match first
+        const exact=results.find(r=>r.ticker===h.ticker||r.ticker===h.ticker.replace('.SI','').replace('.HK','').replace('.T',''));
+        const best=exact||results[0];
+        if(best&&best.name&&best.name!==h.ticker){
+          console.log('[names]',h.ticker,'→',best.name);
+          setHoldings(prev=>{
+            const updated=prev.map(x=>x.ticker===h.ticker?{...x,name:best.name}:x);
+            if(window.portfolioDB){
+              window.portfolioDB.updateHoldings(updated).catch(e=>console.warn('[names] DB:',e));
+            }
+            return updated;
+          });
+        }
+      }catch(e){console.warn('[names] failed for',h.ticker,e.message);}
+    }
+    console.log('[names] Name resolution complete');
   }
 
   async function fetchSenateTrades(){
