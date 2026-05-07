@@ -978,6 +978,25 @@ function App(){
   const [screenMode,setScreenMode]=useState("BUY");  // "BUY" or "SELL"
   const [screenBudget,setScreenBudget]=useState(""); // target funds SGD
   const budgetInputRef=React.useRef(null); // read budget without state update
+  // Trade form refs — uncontrolled inputs prevent focus loss on re-render
+  const tradeRefs={
+    ticker:   React.useRef(null),
+    date:     React.useRef(null),
+    price:    React.useRef(null),
+    shares:   React.useRef(null),
+  };
+  // Holding form refs
+  const holdingRefs={
+    ticker:    React.useRef(null),
+    name:      React.useRef(null),
+    shares:    React.useRef(null),
+    avgCost:   React.useRef(null),
+    price:     React.useRef(null),
+    intrinsic: React.useRef(null),
+    peRatio:   React.useRef(null),
+    divYield:  React.useRef(null),
+  };
+  const pasteRef=React.useRef(null); // broker paste textarea
   const [screenResults,setScreenResults]=useState([]);
   const [screenAI,setScreenAI]=useState("");         // Claude AI narrative
   const [screenAILoad,setScreenAILoad]=useState(false);      // array of alert objects
@@ -1985,16 +2004,20 @@ function App(){
             <div style={{fontSize:15,fontWeight:700,color:C.gold,marginBottom:4}}>📋 Paste Broker Confirmation</div>
             <div style={{fontSize:12,color:C.muted,marginBottom:10}}>Paste your broker SMS / email confirmation. Supports DBS and similar formats.</div>
             <textarea
+              ref={pasteRef}
               rows={4}
               placeholder={"e.g. Fr DBS: Your Sell for Ord Sh, Hotung Investment Holdings Ltd (SG) has been filled on 07 May 2026 09:03:28. Filled price: SGD 1.64. Filled Qty: 3800. Qty left: 0."}
-              value={pasteText}
+              defaultValue={pasteText}
+              onBlur={e=>setPasteText(e.target.value)}
               onChange={e=>setPasteText(e.target.value)}
               style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,color:C.text,borderRadius:8,padding:"10px",fontSize:12,resize:"vertical",boxSizing:"border-box",fontFamily:"monospace",lineHeight:1.5}}
             />
             <div style={{display:"flex",gap:8,marginTop:8}}>
               <button onClick={()=>{
                 setParseError('');
-                const r=parseBrokerMsg(pasteText);
+                const liveText=pasteRef.current?pasteRef.current.value:pasteText;
+                if(liveText!==pasteText) setPasteText(liveText);
+                const r=parseBrokerMsg(liveText);
                 if(!r.type||!r.price||!r.shares){
                   setParseError("Could not parse — check format. Needs: Buy/Sell, Filled price, Filled Qty.");
                   setParsedTrade(null);
@@ -2045,7 +2068,7 @@ function App(){
 
         {/* Trade Entry / Edit Form */}
         {showTradeForm&&(
-          <div style={{...card,border:`1px solid ${editTradeId!=null?C.gold:C.accent}40`,background:C.surface,marginBottom:14}}>
+          <div key={editTradeId??'new-trade'} style={{...card,border:`1px solid ${editTradeId!=null?C.gold:C.accent}40`,background:C.surface,marginBottom:14}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
               <div style={{fontSize:15,fontWeight:700,color:editTradeId!=null?C.gold:C.accent}}>
                 {editTradeId!=null?"EDIT TRADE":"NEW TRADE ENTRY"}
@@ -2057,7 +2080,7 @@ function App(){
             <div style={{marginBottom:8}}>
               <div style={lbl}>Stock Search — Name or Ticker Symbol</div>
               <div style={{display:"flex",gap:6}}>
-                <input style={{...iField,flex:1}} placeholder="e.g. NVIDIA or NVDA or D05.SI" value={tickerSearchTerm} onChange={e=>{setTickerSearchTerm(e.target.value);setTickerCheck({status:"idle",message:"",suggestions:[]});}} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();lookupTicker(tickerSearchTerm);}}}/>
+                <input ref={searchInputRef} style={{...iField,flex:1}} placeholder="e.g. NVIDIA or NVDA or D05.SI" value={tickerSearchTerm} onChange={e=>{setTickerSearchTerm(e.target.value);setTickerCheck({status:"idle",message:"",suggestions:[]});}} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();lookupTicker(tickerSearchTerm);}}}/>
                 <button onClick={()=>lookupTicker(tickerSearchTerm)} style={{padding:"7px 12px",borderRadius:7,border:`1px solid ${C.accent}`,background:C.accent+"18",color:C.accent,fontSize:14,fontWeight:700,cursor:"pointer",flexShrink:0,whiteSpace:"nowrap"}}>
                   {tickerCheck.status==="loading"?"...":"Search"}
                 </button>
@@ -2105,7 +2128,7 @@ function App(){
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
               <div>
                 <div style={lbl}>Ticker Symbol {tickerCheck.status==="found"?"(confirmed)":"(manual entry)"}</div>
-                <input style={{...iField,borderColor:tickerCheck.status==="found"?C.green:tickerCheck.status==="suggestions"?C.gold:C.border}} placeholder="TICKER" value={tradeForm.ticker} onChange={e=>setTradeForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/>
+                <input ref={tradeRefs.ticker} style={{...iField,borderColor:tickerCheck.status==="found"?C.green:tickerCheck.status==="suggestions"?C.gold:C.border}} placeholder="TICKER" defaultValue={tradeForm.ticker} onBlur={e=>setTradeForm(f=>({...f,ticker:e.target.value.toUpperCase()}))} onChange={e=>setTradeForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/>
               </div>
               <div>
                 <div style={lbl}>Trade Type</div>
@@ -2120,7 +2143,7 @@ function App(){
             {/* Row 2: Date */}
             <div style={{marginBottom:8}}>
               <div style={lbl}>Trade Date</div>
-              <input type="date" style={iField} value={tradeForm.date} onChange={e=>setTradeForm(f=>({...f,date:e.target.value}))}/>
+              <input ref={tradeRefs.date} type="date" style={iField} defaultValue={tradeForm.date} onBlur={e=>setTradeForm(f=>({...f,date:e.target.value}))} onChange={e=>setTradeForm(f=>({...f,date:e.target.value}))}/>
             </div>
 
             {/* Row 3: Exchange/Country separate from Currency */}
@@ -2145,11 +2168,11 @@ function App(){
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
               <div>
                 <div style={lbl}>Price ({tradeForm.ccy} {tradePriceSym})</div>
-                <input type="number" style={iField} placeholder="0.00" value={tradeForm.price} onChange={e=>setTradeForm(f=>({...f,price:e.target.value}))}/>
+                <input ref={tradeRefs.price} type="number" style={iField} placeholder="0.00" defaultValue={tradeForm.price} onBlur={e=>setTradeForm(f=>({...f,price:e.target.value}))} onChange={e=>setTradeForm(f=>({...f,price:e.target.value}))}/>
               </div>
               <div>
                 <div style={lbl}>Units / Shares</div>
-                <input type="number" style={iField} placeholder="0" value={tradeForm.shares} onChange={e=>setTradeForm(f=>({...f,shares:e.target.value}))}/>
+                <input ref={tradeRefs.shares} type="number" style={iField} placeholder="0" defaultValue={tradeForm.shares} onBlur={e=>setTradeForm(f=>({...f,shares:e.target.value}))} onChange={e=>setTradeForm(f=>({...f,shares:e.target.value}))}/>
               </div>
             </div>
 
@@ -3340,7 +3363,7 @@ function App(){
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
             <div>
               <div style={lbl}>Ticker Symbol</div>
-              <input style={iF} value={f.ticker||""} onChange={e=>setF(p=>({...p,ticker:e.target.value.toUpperCase()}))}/>
+              <input ref={holdingRefs.ticker} style={iF} defaultValue={f.ticker||""} onBlur={e=>setF(p=>({...p,ticker:e.target.value.toUpperCase()}))} onChange={e=>setF(p=>({...p,ticker:e.target.value.toUpperCase()}))}/>
             </div>
             <div>
               <div style={lbl}>Market / Exchange</div>
@@ -3350,7 +3373,7 @@ function App(){
             </div>
             <div style={{gridColumn:"1 / -1"}}>
               <div style={lbl}>Company Name</div>
-              <input style={iF} value={f.name||""} onChange={e=>setF(p=>({...p,name:e.target.value}))} placeholder="Full company name"/>
+              <input ref={holdingRefs.name} style={iF} defaultValue={f.name||""} onBlur={e=>setF(p=>({...p,name:e.target.value}))} onChange={e=>setF(p=>({...p,name:e.target.value}))} placeholder="Full company name"/>
             </div>
             <div>
               <div style={lbl}>Sector</div>
@@ -3371,11 +3394,11 @@ function App(){
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
             <div>
               <div style={lbl}>Shares / Units</div>
-              <input type="number" style={iF} value={f.shares||""} onChange={e=>setF(p=>({...p,shares:e.target.value}))}/>
+              <input ref={holdingRefs.shares} type="number" style={iF} defaultValue={f.shares||""} onBlur={e=>setF(p=>({...p,shares:e.target.value}))} onChange={e=>setF(p=>({...p,shares:e.target.value}))}/>
             </div>
             <div>
               <div style={lbl}>Avg Cost ({MKT[f.mkt||"US"]?.symbol})</div>
-              <input type="number" style={iF} value={f.avgCost||""} onChange={e=>setF(p=>({...p,avgCost:e.target.value}))}/>
+              <input ref={holdingRefs.avgCost} type="number" style={iF} defaultValue={f.avgCost||""} onBlur={e=>setF(p=>({...p,avgCost:e.target.value}))} onChange={e=>setF(p=>({...p,avgCost:e.target.value}))}/>
             </div>
           </div>
 
@@ -3384,19 +3407,19 @@ function App(){
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
             <div>
               <div style={lbl}>Current Price ({MKT[f.mkt||"US"]?.symbol})</div>
-              <input type="number" style={iF} value={f.price||""} onChange={e=>setF(p=>({...p,price:e.target.value}))}/>
+              <input ref={holdingRefs.price} type="number" style={iF} defaultValue={f.price||""} onBlur={e=>setF(p=>({...p,price:e.target.value}))} onChange={e=>setF(p=>({...p,price:e.target.value}))}/>
             </div>
             <div>
               <div style={lbl}>Intrinsic Value ({MKT[f.mkt||"US"]?.symbol})</div>
-              <input type="number" style={iF} value={f.intrinsic||""} onChange={e=>setF(p=>({...p,intrinsic:e.target.value}))} placeholder="Leave blank to auto-calc"/>
+              <input ref={holdingRefs.intrinsic} type="number" style={iF} defaultValue={f.intrinsic||""} onBlur={e=>setF(p=>({...p,intrinsic:e.target.value}))} onChange={e=>setF(p=>({...p,intrinsic:e.target.value}))} placeholder="Leave blank to auto-calc"/>
             </div>
             <div>
               <div style={lbl}>P/E Ratio</div>
-              <input type="number" style={iF} value={f.peRatio||""} onChange={e=>setF(p=>({...p,peRatio:e.target.value}))}/>
+              <input ref={holdingRefs.peRatio} type="number" style={iF} defaultValue={f.peRatio||""} onBlur={e=>setF(p=>({...p,peRatio:e.target.value}))} onChange={e=>setF(p=>({...p,peRatio:e.target.value}))}/>
             </div>
             <div>
               <div style={lbl}>Dividend Yield (%)</div>
-              <input type="number" style={iF} value={f.divYield||""} onChange={e=>setF(p=>({...p,divYield:e.target.value}))}/>
+              <input ref={holdingRefs.divYield} type="number" style={iF} defaultValue={f.divYield||""} onBlur={e=>setF(p=>({...p,divYield:e.target.value}))} onChange={e=>setF(p=>({...p,divYield:e.target.value}))}/>
             </div>
           </div>
 
