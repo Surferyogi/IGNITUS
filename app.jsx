@@ -3401,10 +3401,13 @@ function App(){
     const effectiveIV=computedIV>0?computedIV:(h.intrinsic||0);
     const hScored={...h,intrinsic:effectiveIV};
     const sc=scoreH(hScored),r=getRec(hScored),bs=buffettScore(hScored);
-    const gainPct=((h.price-h.avgCost)/h.avgCost)*100,upside=((effectiveIV-h.price)/h.price)*100;
+    const gainPct=h.avgCost>0?((h.price-h.avgCost)/h.avgCost)*100:0;
+    const upside=effectiveIV>0&&h.price>0?((effectiveIV-h.price)/h.price)*100:0;
+    const showGainPct=h.shares>0&&h.avgCost>0; // hide % when fully sold or no cost basis
     const localVal=h.price*h.shares,localCost=h.avgCost*h.shares,localGain=localVal-localCost,localDiv=(h.divYield/100)*localVal;
     const sgdVal=toSGDlive(localVal,h.mkt),sgdCost=toSGDlive(localCost,h.mkt),sgdGain=toSGDlive(localGain,h.mkt),sgdDiv=toSGDlive(localDiv,h.mkt);
     const w=wtTotal(h),pos=gainPct>=0;
+    const tickerRealizedH=realizedPerTicker[h.ticker]||0; // total realized P&L for this stock
     const analysis=aiText[h.ticker],loading=aiLoad[h.ticker];
     const buyHist=trades.filter(t=>t.ticker===h.ticker&&t.type==="BUY").sort((a,b)=>b.date.localeCompare(a.date)); // newest first
     const sellHist=trades.filter(t=>t.ticker===h.ticker&&t.type==="SELL").sort((a,b)=>b.date.localeCompare(a.date));
@@ -3436,7 +3439,7 @@ function App(){
             <div style={{background:C.surface,borderRadius:9,padding:"10px 10px"}}>
               <div style={{fontSize:13,color:C.muted,marginBottom:2}}>Price ({m.code})</div>
               <div style={{fontSize:18,fontWeight:800}}>{fmtL(h.price,h.mkt)}</div>
-              <div style={{fontSize:13,color:pos?C.green:C.red,fontWeight:700}}>{fmtPct(gainPct)}</div>
+              {showGainPct&&<div style={{fontSize:13,color:pos?C.green:C.red,fontWeight:700}}>{fmtPct(gainPct)}</div>}
             </div>
             <div style={{background:C.surface,borderRadius:9,padding:"10px 10px"}}>
               <div style={{fontSize:13,color:C.muted,marginBottom:2}}>
@@ -3530,6 +3533,14 @@ function App(){
               );
             })()}
             <div style={{...row,marginBottom:3}}><span style={{fontSize:13,color:C.muted}}>Portfolio Weight</span><span style={{fontSize:15,fontWeight:800,color:C.accent}}>{w.toFixed(2)}%</span></div>
+            {tickerRealizedH!==0&&(
+              <div style={{...row,marginTop:6,marginBottom:3}}>
+                <span style={{fontSize:13,color:C.muted}}>Realized P&amp;L</span>
+                <span style={{fontSize:15,fontWeight:800,color:tickerRealizedH>=0?C.green:C.red}}>
+                  {tickerRealizedH>=0?"+":"-"}{fmtS(Math.abs(tickerRealizedH))}
+                </span>
+              </div>
+            )}
             <div style={{height:4,borderRadius:2,background:C.border}}><div style={{width:`${Math.min(w*3,100)}%`,height:"100%",borderRadius:2,background:C.accent}}/></div>
           </div>
 
