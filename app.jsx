@@ -2181,7 +2181,19 @@ function App(){
   }
 
   function TradesView(){
-    const shown=tradeType==="ALL"?trades:trades.filter(t=>t.type===tradeType);
+    const [tradeSearch,setTradeSearch]=React.useState("");
+    const tradeSearchRef=React.useRef(null);
+    const shown=React.useMemo(()=>{
+      let list=tradeType==="ALL"?trades:trades.filter(t=>t.type===tradeType);
+      if(tradeSearch.trim()){
+        const q=tradeSearch.trim().toUpperCase();
+        list=list.filter(t=>
+          t.ticker?.toUpperCase().includes(q)||
+          (tickerNames[t.ticker]||"").toUpperCase().includes(q)
+        );
+      }
+      return list;
+    },[trades,tradeType,tradeSearch,tickerNames]);
     const totalReal=trades.filter(t=>t.type==="SELL").reduce((s,t)=>s+toSGDlive(t.profit||0,t.mkt),0);
     const mkts=Object.keys(MKT);
     const ccyList=Object.keys(CCY);
@@ -2524,7 +2536,30 @@ function App(){
           {["ALL","BUY","SELL"].map(t=><button key={t} style={pill(tradeType===t)} onClick={()=>setTradeType(t)}>{t}</button>)}
         </div>
 
-        {shown.slice(0,100).map((t,i)=>{
+        {/* Trade search */}
+        <div style={{position:"relative",marginBottom:10}}>
+          <input
+            ref={tradeSearchRef}
+            placeholder={`Search ${shown.length} trade${shown.length!==1?"s":""}...`}
+            defaultValue={tradeSearch}
+            onChange={e=>setTradeSearch(e.target.value)}
+            style={{...inp,paddingRight:tradeSearch?32:12}}
+          />
+          {tradeSearch&&(
+            <button onClick={()=>{setTradeSearch("");if(tradeSearchRef.current)tradeSearchRef.current.value="";}}
+              style={{position:"absolute",right:8,top:"50%",transform:"translateY(-50%)",
+                background:"none",border:"none",color:C.muted,fontSize:18,cursor:"pointer",lineHeight:1}}>
+              ✕
+            </button>
+          )}
+        </div>
+
+        {/* Trade list — show all when searching, paginate at 200 when unfiltered */}
+        {(()=>{
+          const limit=tradeSearch?shown.length:200;
+          const display=shown.slice(0,limit);
+          return(<>
+            {display.map((t,i)=>{
           const sym=ccySymbol(t.ccy||t.mkt);
           const localTotal=t.shares*t.price;
           const sgdTotal=ccyToSGD(localTotal,t.ccy||t.mkt);
@@ -2565,7 +2600,11 @@ function App(){
             </div>
           );
         })}
-        {shown.length>100&&<div style={{textAlign:"center",color:C.muted,fontSize:15,padding:"10px 0"}}>Showing 100 of {shown.length}</div>}
+            {shown.length>limit&&<div style={{textAlign:"center",color:C.muted,fontSize:14,padding:"10px 0"}}>
+              Showing {limit} of {shown.length} — search by ticker to find specific trades
+            </div>}
+          </>);
+        })()}
       </>
     );
   }
