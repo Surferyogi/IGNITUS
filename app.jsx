@@ -2151,7 +2151,7 @@ function App(){
                 </span>
               </div>
             )}
-            <button onClick={submitTrade} style={{width:"100%",padding:"11px",borderRadius:8,border:"none",background:tradeForm.type==="BUY"?C.green:C.red,color:"#000",fontSize:16,fontWeight:700,cursor:"pointer"}}>
+            <button onClick={()=>submitTrade()} style={{width:"100%",padding:"11px",borderRadius:8,border:"none",background:tradeForm.type==="BUY"?C.green:C.red,color:"#000",fontSize:16,fontWeight:700,cursor:"pointer"}}>
               {editTradeId!=null?"Save Changes":"Confirm"} {tradeForm.type} — {tradeForm.ticker||"ticker"}
             </button>
           </div>
