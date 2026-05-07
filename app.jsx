@@ -1198,6 +1198,15 @@ function App(){
     return map;
   },[holdings]);
 
+  // Per-ticker realized P&L: sum of profit on all SELL trades for each ticker
+  const realizedPerTicker=useMemo(()=>{
+    const map={};
+    trades.filter(t=>t.type==="SELL").forEach(t=>{
+      map[t.ticker]=(map[t.ticker]||0)+ccyToSGD(t.profit||0,t.ccy||t.mkt);
+    });
+    return map;
+  },[trades,fxRates]);
+
   const [tickerCheck,setTickerCheck]=useState({status:"idle",message:"",suggestions:[]});
   const [tickerSearchTerm,setTickerSearchTerm]=useState("");
 
@@ -1817,6 +1826,7 @@ function App(){
           const localVal=h.price*h.shares,localCost=h.avgCost*h.shares,localGain=localVal-localCost;
           const gainPct=h.avgCost>0?((h.price-h.avgCost)/h.avgCost)*100:0;
           const isSold=h.fullySold||h.shares===0;
+          const tickerRealized=realizedPerTicker[h.ticker]||0;
           const compIV=valuations[h.ticker]?.valuations?.average||0;
           const effIV=compIV>0?compIV:h.intrinsic;
           const upside=effIV>0&&h.price>0?((effIV-h.price)/h.price)*100:0;
@@ -1873,8 +1883,17 @@ function App(){
                 </div>
               </div>
               {isSold?(
-                <div style={{background:C.surface,borderRadius:8,padding:"7px 10px",marginBottom:7,textAlign:"center",fontSize:13,color:C.muted}}>
-                  Position closed · Tap to view trade history
+                <div style={{background:C.surface,borderRadius:8,padding:"8px 12px",marginBottom:7}}>
+                  {tickerRealized!==0?(
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div style={{fontSize:13,color:C.muted}}>Realized P&amp;L (position closed)</div>
+                      <div style={{fontSize:15,fontWeight:800,color:tickerRealized>=0?C.green:C.red}}>
+                        {tickerRealized>=0?"+":"-"}{fmtS(Math.abs(tickerRealized))}
+                      </div>
+                    </div>
+                  ):(
+                    <div style={{textAlign:"center",fontSize:13,color:C.muted}}>Position closed · Tap to view trade history</div>
+                  )}
                 </div>
               ):(
                 <div style={{background:C.accent+"0D",border:`1px solid ${C.accentDim}20`,borderRadius:8,padding:"7px 10px",marginBottom:7}}>
@@ -1883,7 +1902,15 @@ function App(){
                     <div style={{textAlign:"center"}}><div style={{fontSize:13,color:C.muted}}>Weight{mktFilter!=="ALL"?` (${mktFilter})`:""}</div><div style={{fontSize:17,fontWeight:800,color:C.accent}}>{w.toFixed(1)}%</div></div>
                     <div style={{textAlign:"right"}}><div style={{fontSize:13,color:C.muted}}>Unr. P&amp;L</div><div style={{fontSize:14,fontWeight:800,color:pos?C.green:C.red}}>{pos?"+":"-"}{fmtL(Math.abs(localGain),h.mkt,0)}</div><div style={{fontSize:13,color:C.muted}}>{pos?"+":"-"}{fmtS(Math.abs(sgdGain))}</div></div>
                   </div>
-                  <div style={{height:3,borderRadius:2,background:C.border}}><div style={{width:`${Math.min(w*2.5,100)}%`,height:"100%",borderRadius:2,background:C.accent,opacity:0.7}}/></div>
+                  {tickerRealized!==0&&(
+                    <div style={{borderTop:`1px solid ${C.border}`,paddingTop:5,marginTop:3,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div style={{fontSize:12,color:C.muted}}>Realized P&amp;L</div>
+                      <div style={{fontSize:13,fontWeight:700,color:tickerRealized>=0?C.green:C.red}}>
+                        {tickerRealized>=0?"+":"-"}{fmtS(Math.abs(tickerRealized))}
+                      </div>
+                    </div>
+                  )}
+                  <div style={{height:3,borderRadius:2,background:C.border,marginTop:4}}><div style={{width:`${Math.min(w*2.5,100)}%`,height:"100%",borderRadius:2,background:C.accent,opacity:0.7}}/></div>
                 </div>
               )}
               {!isSold&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -2183,8 +2210,12 @@ function App(){
   function TradesView(){
     const [tradeSearch,setTradeSearch]=React.useState("");
     const tradeSearchRef=React.useRef(null);
+
+    // All shown trades: filter by type + search, sorted latest first
     const shown=React.useMemo(()=>{
-      let list=tradeType==="ALL"?trades:trades.filter(t=>t.type===tradeType);
+      let list=tradeType==="ALL"?[...trades]:[...trades].filter(t=>t.type===tradeType);
+      // Sort latest date first
+      list.sort((a,b)=>(b.date||"").localeCompare(a.date||""));
       if(tradeSearch.trim()){
         const q=tradeSearch.trim().toUpperCase();
         list=list.filter(t=>
@@ -2194,7 +2225,10 @@ function App(){
       }
       return list;
     },[trades,tradeType,tradeSearch,tickerNames]);
-    const totalReal=trades.filter(t=>t.type==="SELL").reduce((s,t)=>s+toSGDlive(t.profit||0,t.mkt),0);
+    const totalReal=trades.filter(t=>t.type==="SELL").reduce((s,t)=>s+ccyToSGD(t.profit||0,t.ccy||t.mkt),0);
+    const shownBuys=shown.filter(t=>t.type==="BUY");
+    const shownSells=shown.filter(t=>t.type==="SELL");
+    const shownReal=shownSells.reduce((s,t)=>s+ccyToSGD(t.profit||0,t.ccy||t.mkt),0);
     const mkts=Object.keys(MKT);
     const ccyList=Object.keys(CCY);
     const iField={width:"100%",background:C.card,border:`1px solid ${C.border}`,borderRadius:7,padding:"7px 10px",color:C.text,fontSize:15,outline:"none",boxSizing:"border-box"};
@@ -2204,11 +2238,24 @@ function App(){
     return(
       <>
         <div style={{...card,background:C.accent+"08",border:`1px solid ${C.accentDim}25`,marginBottom:12}}>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,textAlign:"center"}}>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,textAlign:"center",marginBottom:tradeSearch?8:0}}>
             <div><div style={{fontSize:13,color:C.muted}}>Total</div><div style={{fontSize:22,fontWeight:800}}>{trades.length}</div></div>
+            <div><div style={{fontSize:13,color:C.muted}}>Buys</div><div style={{fontSize:22,fontWeight:800,color:C.green}}>{trades.filter(t=>t.type==="BUY").length}</div></div>
             <div><div style={{fontSize:13,color:C.muted}}>Sells</div><div style={{fontSize:22,fontWeight:800,color:C.gold}}>{trades.filter(t=>t.type==="SELL").length}</div></div>
-            <div><div style={{fontSize:13,color:C.muted}}>Realized P&amp;L</div><div style={{fontSize:17,fontWeight:800,color:totalReal>=0?C.green:C.red}}>{totalReal>=0?"+":"-"}{fmtS(Math.abs(totalReal))}</div></div>
           </div>
+          <div style={{borderTop:`1px solid ${C.border}`,paddingTop:8,marginTop:4,textAlign:"center"}}>
+            <div style={{fontSize:13,color:C.muted,marginBottom:2}}>Total Realized P&amp;L (all time)</div>
+            <div style={{fontSize:20,fontWeight:800,color:totalReal>=0?C.green:C.red}}>
+              {totalReal>=0?"+":"-"}{fmtS(Math.abs(totalReal))}
+            </div>
+          </div>
+          {tradeSearch&&shown.length<trades.length&&(
+            <div style={{marginTop:8,paddingTop:8,borderTop:`1px solid ${C.border}`,display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,textAlign:"center"}}>
+              <div><div style={{fontSize:11,color:C.accent}}>Filtered</div><div style={{fontSize:16,fontWeight:800,color:C.accent}}>{shown.length}</div></div>
+              <div><div style={{fontSize:11,color:C.green}}>Buys</div><div style={{fontSize:16,fontWeight:800,color:C.green}}>{shownBuys.length}</div></div>
+              <div><div style={{fontSize:11,color:C.gold}}>Sells</div><div style={{fontSize:16,fontWeight:800,color:C.gold}}>{shownSells.length}</div></div>
+            </div>
+          )}
         </div>
 
         {/* Add / Edit Trade Button + Paste Parser Button */}
@@ -2554,10 +2601,10 @@ function App(){
           )}
         </div>
 
-        {/* Trade list — show all when searching, paginate at 200 when unfiltered */}
+        {/* Trade list — all trades, latest first, no cap */}
         {(()=>{
-          const limit=tradeSearch?shown.length:200;
-          const display=shown.slice(0,limit);
+          const limit=200;
+          const display=shown.slice(0,tradeSearch?shown.length:limit);
           return(<>
             {display.map((t,i)=>{
           const sym=ccySymbol(t.ccy||t.mkt);
@@ -2600,8 +2647,8 @@ function App(){
             </div>
           );
         })}
-            {shown.length>limit&&<div style={{textAlign:"center",color:C.muted,fontSize:14,padding:"10px 0"}}>
-              Showing {limit} of {shown.length} — search by ticker to find specific trades
+            {shown.length>limit&&!tradeSearch&&<div style={{textAlign:"center",color:C.muted,fontSize:14,padding:"12px 0",borderTop:`1px solid ${C.border}`,marginTop:4}}>
+              Showing {limit} of {shown.length} trades · Use search above to find any trade instantly
             </div>}
           </>);
         })()}
