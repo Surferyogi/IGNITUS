@@ -384,7 +384,9 @@ function App(){
   const [aiText,setAiText]=useState({});
   const [aiLoad,setAiLoad]=useState({});
   const [showTradeForm,setShowTradeForm]=useState(false);
-  const [dupeWarning,setDupeWarning]=useState(null); // {trade, pending} when duplicate detected
+  const [dupeWarning,setDupeWarning]=useState(null);   // {trade, pending} when duplicate detected
+  const [deleteConfirmTrade,setDeleteConfirmTrade]=useState(null); // trade to confirm delete
+  const [editConfirmTrade,setEditConfirmTrade]=useState(null);     // trade to confirm edit
   const [showPasteParser,setShowPasteParser]=useState(false); // broker msg parser
   const [pasteText,setPasteText]=useState("");
   const [parsedTrade,setParsedTrade]=useState(null);    // result of parse
@@ -2199,8 +2201,8 @@ function App(){
                     <div style={{fontSize:13,color:C.muted}}>{t.type==="BUY"?"-":"+"}{fmtS(sgdTotal)}</div>
                   </div>
                   <div style={{display:"flex",gap:5}}>
-                    <button onClick={()=>startEditTrade(t)} style={{fontSize:14,padding:"3px 8px",borderRadius:5,border:`1px solid ${C.border}`,background:"transparent",color:C.accent,cursor:"pointer",fontWeight:600}}>Edit</button>
-                    <button onClick={()=>deleteTrade(t.id)} style={{fontSize:14,padding:"3px 8px",borderRadius:5,border:`1px solid ${C.red}44`,background:"transparent",color:C.red,cursor:"pointer",fontWeight:600}}>Del</button>
+                    <button onClick={()=>setEditConfirmTrade(t)} style={{fontSize:14,padding:"3px 8px",borderRadius:5,border:`1px solid ${C.border}`,background:"transparent",color:C.accent,cursor:"pointer",fontWeight:600}}>Edit</button>
+                    <button onClick={()=>setDeleteConfirmTrade(t)} style={{fontSize:14,padding:"3px 8px",borderRadius:5,border:`1px solid ${C.red}44`,background:"transparent",color:C.red,cursor:"pointer",fontWeight:600}}>Del</button>
                   </div>
                 </div>
               </div>
@@ -3603,6 +3605,68 @@ function App(){
       )}
 
       {sel&&<ErrBoundary><HoldingDetail/></ErrBoundary>}
+
+      {/* ── Delete Trade Confirmation Modal ──────────────────────────── */}
+      {deleteConfirmTrade&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.82)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+          <div style={{background:C.card,borderRadius:16,padding:24,maxWidth:360,width:"100%",border:`1px solid ${C.red}60`}}>
+            <div style={{fontSize:18,fontWeight:800,color:C.red,marginBottom:6}}>🗑 Confirm Delete</div>
+            <div style={{fontSize:13,color:C.muted,marginBottom:14}}>This will permanently remove the trade and recalculate your portfolio.</div>
+            <div style={{background:C.surface,borderRadius:10,padding:"12px 14px",marginBottom:16,border:`1px solid ${C.border}`}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px 6px",fontSize:13}}>
+                {[
+                  ["Ticker",deleteConfirmTrade.ticker],
+                  ["Type",deleteConfirmTrade.type],
+                  ["Date",deleteConfirmTrade.date],
+                  ["Price",deleteConfirmTrade.price],
+                  ["Qty",(deleteConfirmTrade.shares||0).toLocaleString()],
+                  ["Market",deleteConfirmTrade.mkt||"—"],
+                ].map(([l,v])=>(
+                  <div key={l}>
+                    <div style={{fontSize:10,color:C.muted}}>{l}</div>
+                    <div style={{fontWeight:700,color:deleteConfirmTrade.type==="BUY"?C.green:C.red}}>{v}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={()=>setDeleteConfirmTrade(null)} style={{flex:1,padding:"13px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.text,fontSize:14,fontWeight:700,cursor:"pointer"}}>✕ Cancel</button>
+              <button onClick={()=>{deleteTrade(deleteConfirmTrade.id);setDeleteConfirmTrade(null);}} style={{flex:1,padding:"13px",borderRadius:10,border:`1px solid ${C.red}`,background:C.red+"18",color:C.red,fontSize:14,fontWeight:700,cursor:"pointer"}}>🗑 Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Edit Trade Confirmation Modal ──────────────────────────────── */}
+      {editConfirmTrade&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.82)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+          <div style={{background:C.card,borderRadius:16,padding:24,maxWidth:360,width:"100%",border:`1px solid ${C.accent}60`}}>
+            <div style={{fontSize:18,fontWeight:800,color:C.accent,marginBottom:6}}>✏ Edit Trade</div>
+            <div style={{fontSize:13,color:C.muted,marginBottom:14}}>You are about to edit this trade. Continue?</div>
+            <div style={{background:C.surface,borderRadius:10,padding:"12px 14px",marginBottom:16,border:`1px solid ${C.border}`}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px 6px",fontSize:13}}>
+                {[
+                  ["Ticker",editConfirmTrade.ticker],
+                  ["Type",editConfirmTrade.type],
+                  ["Date",editConfirmTrade.date],
+                  ["Price",editConfirmTrade.price],
+                  ["Qty",(editConfirmTrade.shares||0).toLocaleString()],
+                  ["Market",editConfirmTrade.mkt||"—"],
+                ].map(([l,v])=>(
+                  <div key={l}>
+                    <div style={{fontSize:10,color:C.muted}}>{l}</div>
+                    <div style={{fontWeight:700,color:editConfirmTrade.type==="BUY"?C.green:C.red}}>{v}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={()=>setEditConfirmTrade(null)} style={{flex:1,padding:"13px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.text,fontSize:14,fontWeight:700,cursor:"pointer"}}>✕ Cancel</button>
+              <button onClick={()=>{startEditTrade(editConfirmTrade);setEditConfirmTrade(null);}} style={{flex:1,padding:"13px",borderRadius:10,border:`1px solid ${C.accent}`,background:C.accent+"18",color:C.accent,fontSize:14,fontWeight:700,cursor:"pointer"}}>✏ Edit</button>
+            </div>
+          </div>
+        </div>
+      )}
       {dupeWarning&&(
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.82)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
           <div style={{background:C.card,borderRadius:16,padding:24,maxWidth:380,width:"100%",border:`1px solid ${C.red}60`}}>
