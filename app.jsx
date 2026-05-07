@@ -1333,10 +1333,31 @@ function App(){
 
     let newTrades;
     if(editTradeId!=null){
-      newTrades=trades.map(t=>t.id===editTradeId?{...t,ticker:tU,type,date,price:p,shares:s,mkt,ccy}:t);
+      // Recalculate profit if editing a SELL
+      let editProfit=undefined;
+      if(type==="SELL"){
+        const buysBefore=trades.filter(t=>t.ticker===tU&&t.type==="BUY"&&t.id!==editTradeId);
+        const totalBuyShares=buysBefore.reduce((s,t)=>s+t.shares,0);
+        const totalBuyCost=buysBefore.reduce((s,t)=>s+t.shares*t.price,0);
+        const existH2=holdings.find(h=>h.ticker===tU);
+        const avgCostEdit=totalBuyShares>0?totalBuyCost/totalBuyShares:(existH2?.avgCost||p);
+        editProfit=parseFloat(((p-avgCostEdit)*s).toFixed(2));
+      }
+      newTrades=trades.map(t=>t.id===editTradeId?{...t,ticker:tU,type,date,price:p,shares:s,mkt,ccy,profit:type==="SELL"?editProfit:undefined}:t);
       setEditTradeId(null);
     } else {
-      const newTrade={id:Date.now(),ticker:tU,type,date,price:p,shares:s,mkt,ccy,profit:type==="SELL"?0:undefined};
+      // Compute profit for SELL: (sellPrice - avgCostBefore) × shares
+      const existH=holdings.find(h=>h.ticker===tU);
+      let profit=undefined;
+      if(type==="SELL"&&existH){
+        const buysBefore=trades.filter(t=>t.ticker===tU&&t.type==="BUY");
+        const totalBuyShares=buysBefore.reduce((s,t)=>s+t.shares,0);
+        const totalBuyCost=buysBefore.reduce((s,t)=>s+t.shares*t.price,0);
+        const avgCostBefore=totalBuyShares>0?totalBuyCost/totalBuyShares:existH.avgCost;
+        profit=parseFloat(((p-avgCostBefore)*s).toFixed(2));
+      }
+      const newTrade={id:Date.now(),ticker:tU,type,date,price:p,shares:s,mkt,ccy,
+        profit:type==="SELL"?profit:undefined};
       newTrades=[newTrade,...trades];
     }
 
@@ -2246,7 +2267,7 @@ function App(){
                       <div style={{fontSize:14,color:C.green,fontWeight:700}}>Confirmed: {tickerCheck.confirmed}</div>
                       <div style={{fontSize:14,color:C.text}}>{tickerCheck.message}</div>
                     </div>
-                    <div style={{fontSize:14,fontWeight:700,padding:"2px 8px",borderRadius:5,background:C.green,color:"#000"}}>OK</div>
+                    <div style={{fontSize:14,fontWeight:700,padding:"2px 8px",borderRadius:5,background:C.green,color:"#000",cursor:"pointer"}} onClick={()=>{setTickerCheck({status:"idle",message:"",suggestions:[]});setTickerSearchTerm("");}}>OK ✕</div>
                   </div>
                   {tickerCheck.suggestions&&tickerCheck.suggestions.length>0&&(
                     <div style={{marginTop:6,fontSize:14,color:C.muted}}>
@@ -2329,16 +2350,86 @@ function App(){
               </div>
             </div>
 
-            {/* Preview */}
-            {tradeForm.price&&tradeForm.shares&&tradePriceTotal>0&&(
-              <div style={{background:C.card,borderRadius:7,padding:"8px 10px",marginBottom:8,fontSize:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                <span style={{color:C.muted}}>Total:</span>
-                <span style={{fontWeight:700}}>
-                  {tradePriceSym}{fmt(tradePriceTotal,0)} {tradeForm.ccy}
-                  <span style={{color:C.muted,fontWeight:400}}> ≈ {fmtS(ccyToSGD(tradePriceTotal,tradeForm.ccy))}</span>
-                </span>
-              </div>
-            )}
+            {/* Preview — total + avgCost/profit impact */}
+            {tradeForm.price&&tradeForm.shares&&tradePriceTotal>0&&(()=>{
+              const tU2=(tradeRefs.ticker?.current?.value||tradeForm.ticker||"").toUpperCase().trim();
+              const p2=parseFloat(tradeRefs.price?.current?.value||tradeForm.price||0);
+              const s2=parseInt(tradeRefs.shares?.current?.value||tradeForm.shares||0);
+              const existH2=holdings.find(h=>h.ticker===tU2);
+              const buysBefore2=trades.filter(t=>t.ticker===tU2&&t.type==="BUY"&&(editTradeId==null||t.id!==editTradeId));
+              const totBuyShares2=buysBefore2.reduce((s,t)=>s+t.shares,0);
+              const totBuyCost2=buysBefore2.reduce((s,t)=>s+t.shares*t.price,0);
+              const curAvg=totBuyShares2>0?totBuyCost2/totBuyShares2:(existH2?.avgCost||0);
+              const curShares=existH2?.shares||0;
+              // BUY: new weighted avg cost
+              const newAvgBuy=tradeForm.type==="BUY"&&(curShares+s2)>0
+                ?(curShares*curAvg+s2*p2)/(curShares+s2):0;
+              // SELL: profit and remaining avg (doesn't change on sell)
+              const sellProfit=tradeForm.type==="SELL"&&curAvg>0?(p2-curAvg)*s2:null;
+              const sym2=tradePriceSym;
+              return(
+                <div style={{background:C.card,borderRadius:7,padding:"8px 10px",marginBottom:8,fontSize:14}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:curAvg>0?6:0}}>
+                    <span style={{color:C.muted}}>Total:</span>
+                    <span style={{fontWeight:700}}>
+                      {sym2}{fmt(tradePriceTotal,0)} {tradeForm.ccy}
+                      <span style={{color:C.muted,fontWeight:400}}> ≈ {fmtS(ccyToSGD(tradePriceTotal,tradeForm.ccy))}</span>
+                    </span>
+                  </div>
+                  {curAvg>0&&tradeForm.type==="BUY"&&newAvgBuy>0&&(
+                    <div style={{borderTop:`1px solid ${C.border}`,paddingTop:6,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div>
+                        <div style={{fontSize:12,color:C.muted}}>Current avg cost</div>
+                        <div style={{fontWeight:700,color:C.mutedLight}}>{sym2}{fmt(curAvg,3)} × {curShares.toLocaleString()} sh</div>
+                      </div>
+                      <div style={{fontSize:18,color:C.muted}}>→</div>
+                      <div style={{textAlign:"right"}}>
+                        <div style={{fontSize:12,color:C.accent}}>New avg cost</div>
+                        <div style={{fontWeight:800,color:newAvgBuy<curAvg?C.green:C.gold}}>
+                          {sym2}{fmt(newAvgBuy,3)}
+                          <span style={{fontSize:11,color:newAvgBuy<curAvg?C.green:C.gold,marginLeft:4}}>
+                            {newAvgBuy<curAvg?"▼ lower":"▲ higher"}
+                          </span>
+                        </div>
+                        <div style={{fontSize:12,color:C.muted}}>× {(curShares+s2).toLocaleString()} sh total</div>
+                      </div>
+                    </div>
+                  )}
+                  {curAvg>0&&tradeForm.type==="SELL"&&sellProfit!==null&&(
+                    <div style={{borderTop:`1px solid ${C.border}`,paddingTop:6}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                        <div>
+                          <div style={{fontSize:12,color:C.muted}}>Avg cost basis</div>
+                          <div style={{fontWeight:700,color:C.mutedLight}}>{sym2}{fmt(curAvg,3)} / sh</div>
+                        </div>
+                        <div style={{fontSize:18,color:C.muted}}>−</div>
+                        <div style={{textAlign:"right"}}>
+                          <div style={{fontSize:12,color:C.muted}}>Sell price</div>
+                          <div style={{fontWeight:700,color:C.text}}>{sym2}{fmt(p2,3)} / sh</div>
+                        </div>
+                      </div>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                        background:sellProfit>=0?C.green+"12":C.red+"12",
+                        border:`1px solid ${sellProfit>=0?C.green:C.red}30`,
+                        borderRadius:6,padding:"5px 10px"}}>
+                        <span style={{fontSize:13,color:C.muted,fontWeight:600}}>
+                          {tradeForm.type} {s2.toLocaleString()} sh → P&amp;L:
+                        </span>
+                        <span style={{fontWeight:800,fontSize:16,color:sellProfit>=0?C.green:C.red}}>
+                          {sellProfit>=0?"+":"-"}{sym2}{fmt(Math.abs(sellProfit),2)}
+                          <span style={{fontSize:12,color:C.muted,fontWeight:400,marginLeft:4}}>
+                            ≈ {sellProfit>=0?"+":"-"}{fmtS(Math.abs(ccyToSGD(sellProfit,tradeForm.ccy)))}
+                          </span>
+                        </span>
+                      </div>
+                      <div style={{fontSize:12,color:C.muted,marginTop:4,textAlign:"right"}}>
+                        Avg cost unchanged at {sym2}{fmt(curAvg,3)} for remaining {Math.max(0,curShares-s2).toLocaleString()} sh
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
             <button onClick={()=>submitTrade()} style={{width:"100%",padding:"11px",borderRadius:8,border:"none",background:tradeForm.type==="BUY"?C.green:C.red,color:"#000",fontSize:16,fontWeight:700,cursor:"pointer"}}>
               {editTradeId!=null?"Save Changes":"Confirm"} {tradeForm.type} — {tradeForm.ticker||"ticker"}
             </button>
@@ -2355,8 +2446,13 @@ function App(){
           const sgdTotal=ccyToSGD(localTotal,t.ccy||t.mkt);
           const isEditing=editTradeId===t.id;
           const stockName=tickerNames[t.ticker]||"";
+          const linkedHolding=holdings.find(h=>h.ticker===t.ticker);
           return(
-            <div key={t.id||i} style={{...card,borderLeft:`3px solid ${t.type==="BUY"?C.green:C.red}`,background:isEditing?C.gold+"08":C.card}}>
+            <div key={t.id||i}
+              onClick={()=>{if(linkedHolding){setSel(linkedHolding);setDetailPeriod("6m");}}}
+              style={{...card,borderLeft:`3px solid ${t.type==="BUY"?C.green:C.red}`,
+                cursor:linkedHolding?"pointer":"default",
+                background:isEditing?C.gold+"08":C.card,}}>
               <div style={row}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{display:"flex",gap:6,alignItems:"center",marginBottom:2}}>
@@ -2367,7 +2463,7 @@ function App(){
                       <span style={{fontSize:13,fontWeight:700,padding:"1px 5px",borderRadius:3,background:C.gold+"22",color:C.gold}}>{t.ccy}</span>
                     )}
                   </div>
-                  {stockName&&<div style={{fontSize:14,color:C.mutedLight,marginBottom:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:200}}>{stockName}</div>}
+                  {stockName&&<div style={{fontSize:14,color:C.mutedLight,marginBottom:2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:200}}>{stockName}{linkedHolding&&<span style={{fontSize:10,color:C.accent,marginLeft:5,opacity:0.6}}>→</span>}</div>}
                   <div style={{fontSize:14,color:C.muted}}>{t.date} · {t.shares?.toLocaleString()} @ {sym}{fmt(t.price)}</div>
                   {t.type==="SELL"&&t.profit!=null&&t.profit!==0&&<div style={{fontSize:14,fontWeight:700,color:t.profit>=0?C.green:C.red,marginTop:2}}>P&amp;L: {t.profit>=0?"+":"-"}{sym}{fmt(Math.abs(t.profit),0)} <span style={{color:C.muted,fontWeight:400}}>({t.profit>=0?"+":"-"}{fmtS(Math.abs(ccyToSGD(t.profit,t.ccy||t.mkt)))})</span></div>}
                 </div>
@@ -2376,7 +2472,7 @@ function App(){
                     <div style={{fontSize:16,fontWeight:800,color:t.type==="BUY"?C.red:C.green}}>{t.type==="BUY"?"-":"+"}{sym}{fmt(localTotal,0)}</div>
                     <div style={{fontSize:13,color:C.muted}}>{t.type==="BUY"?"-":"+"}{fmtS(sgdTotal)}</div>
                   </div>
-                  <div style={{display:"flex",gap:5}}>
+                  <div style={{display:"flex",gap:5}} onClick={e=>e.stopPropagation()}>
                     <button onClick={()=>setEditConfirmTrade(t)} style={{fontSize:14,padding:"3px 8px",borderRadius:5,border:`1px solid ${C.border}`,background:"transparent",color:C.accent,cursor:"pointer",fontWeight:600}}>Edit</button>
                     <button onClick={()=>setDeleteConfirmTrade(t)} style={{fontSize:14,padding:"3px 8px",borderRadius:5,border:`1px solid ${C.red}44`,background:"transparent",color:C.red,cursor:"pointer",fontWeight:600}}>Del</button>
                   </div>
