@@ -1172,7 +1172,7 @@ function App(){
   const [tickerCheck,setTickerCheck]=useState({status:"idle",message:"",suggestions:[]});
   const [tickerSearchTerm,setTickerSearchTerm]=useState("");
 
-  const totalValSGD=useMemo(()=>holdings.reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0),[holdings,refreshKey]);
+  const totalValSGD=useMemo(()=>holdings.filter(h=>!h.fullySold).reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0),[holdings,refreshKey]);
   const totalCostSGD=useMemo(()=>holdings.reduce((s,h)=>s+toSGDlive(h.avgCost*h.shares,h.mkt),0),[holdings,refreshKey]);
   const unrealSGD=totalValSGD-totalCostSGD;
   const unrealPct=totalCostSGD?(unrealSGD/totalCostSGD)*100:0;
@@ -1180,8 +1180,10 @@ function App(){
   const totalShares=useMemo(()=>holdings.reduce((s,h)=>s+h.shares,0),[holdings,refreshKey]);
   const avgCostSGD=totalShares?totalCostSGD/totalShares:0;
   const realizedSGD=useMemo(()=>trades.filter(t=>t.type==="SELL").reduce((s,t)=>s+toSGDlive(t.profit||0,t.mkt),0),[trades,refreshKey]);
-  const hdrHoldings=useMemo(()=>
-    mktFilter==="ALL"?holdings:holdings.filter(h=>h.mkt===mktFilter),
+  const hdrHoldings=useMemo(()=>{
+    const active=holdings.filter(h=>!h.fullySold);
+    return mktFilter==="ALL"?active:active.filter(h=>h.mkt===mktFilter);
+  },
   [holdings,mktFilter,refreshKey]);
   const hdrValSGD=useMemo(()=>
     hdrHoldings.reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0),
@@ -1301,26 +1303,28 @@ function App(){
       const totalSellShares=sells.reduce((s,t)=>s+t.shares,0);
       const netShares=totalBuyShares-totalSellShares;
 
-      if(netShares<=0)return; // fully sold out
-
       // Weighted average cost (WAVG): total buy cost / total buy shares
       // Avg cost is unchanged by sells — remaining shares keep same avg cost
       const computedAvgCost=totalBuyShares>0?totalBuyCost/totalBuyShares:baseH?.avgCost||0;
+      const isFullySold=netShares<=0;
 
       if(baseH){
         rebuilt.push({
           ...baseH,
-          shares:netShares,
-          avgCost:parseFloat(computedAvgCost.toFixed(4)),
+          shares:isFullySold?0:netShares,
+          avgCost:isFullySold?0:parseFloat(computedAvgCost.toFixed(4)),
+          fullySold:isFullySold, // flag for UI
         });
       } else {
         // New ticker from trades not yet in holdings
         rebuilt.push({
           id:Date.now()+Math.random(),ticker,name:ticker,mkt:buys[0]?.mkt||"US",
           sector:"Technology",msStyle:"Large Blend",
-          shares:netShares,avgCost:parseFloat(computedAvgCost.toFixed(4)),
+          shares:isFullySold?0:netShares,
+          avgCost:isFullySold?0:parseFloat(computedAvgCost.toFixed(4)),
           price:computedAvgCost,intrinsic:computedAvgCost*1.1,
-          moat:"Narrow",divYield:0,senateBuys:0,senateSells:0,peRatio:20,revenueGrowth:0
+          moat:"Narrow",divYield:0,senateBuys:0,senateSells:0,peRatio:20,revenueGrowth:0,
+          fullySold:isFullySold,
         });
       }
     });
@@ -1769,7 +1773,8 @@ function App(){
           return src2;
         })().map(h=>{
           const localVal=h.price*h.shares,localCost=h.avgCost*h.shares,localGain=localVal-localCost;
-          const gainPct=((h.price-h.avgCost)/h.avgCost)*100;
+          const gainPct=h.avgCost>0?((h.price-h.avgCost)/h.avgCost)*100:0;
+          const isSold=h.fullySold||h.shares===0;
           const compIV=valuations[h.ticker]?.valuations?.average||0;
           const effIV=compIV>0?compIV:h.intrinsic;
           const upside=effIV>0&&h.price>0?((effIV-h.price)/h.price)*100:0;
@@ -1778,7 +1783,19 @@ function App(){
           const w=wt(h),pos=gainPct>=0,sc=scoreH(hScored),r=getRec(hScored);
           const sCol=SCOL[SECTORS.indexOf(h.sector)%SCOL.length];
           return(
-            <div key={h.id} style={{...card,cursor:"pointer"}} onClick={()=>{setSel(h);setDetailPeriod("6m");}}>
+            <div key={h.id} style={{...card,cursor:"pointer",
+              opacity:isSold?0.65:1,
+              borderLeft:isSold?`3px solid ${C.muted}`:undefined,
+            }} onClick={()=>{setSel(h);setDetailPeriod("6m");}}>
+              {/* Sold banner */}
+              {isSold&&(
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                  background:C.muted+"18",borderRadius:6,padding:"4px 10px",marginBottom:8,
+                  border:`1px solid ${C.muted}30`}}>
+                  <span style={{fontSize:12,fontWeight:700,color:C.muted,letterSpacing:"0.06em"}}>✓ FULLY SOLD</span>
+                  <span style={{fontSize:12,color:C.muted}}>Holdings: 0</span>
+                </div>
+              )}
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{display:"flex",alignItems:"center",gap:5,flexWrap:"wrap"}}>
@@ -1788,21 +1805,24 @@ function App(){
                   </div>
                   <div style={{fontSize:14,color:C.muted,marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:200}}>{h.name}</div>
                   <div style={{fontSize:14,color:C.mutedLight,marginTop:3}}>
-                    Avg Cost: <b style={{color:C.text}}>{fmtL(h.avgCost,h.mkt)}</b>
-                    <span style={{color:C.muted,fontWeight:400}}> ({fmtS(toSGDlive(h.avgCost,h.mkt))})</span>
+                    Avg Cost: {isSold
+                      ?<b style={{color:C.muted}}>N/A (fully sold)</b>
+                      :<><b style={{color:C.text}}>{fmtL(h.avgCost,h.mkt)}</b><span style={{color:C.muted,fontWeight:400}}> ({fmtS(toSGDlive(h.avgCost,h.mkt))})</span></>}
                   </div>
-                  <div style={{fontSize:14,color:C.mutedLight,marginTop:1}}>
+                  {!isSold&&<div style={{fontSize:14,color:C.mutedLight,marginTop:1}}>
                     Intrinsic: {effIV>0
                       ?<><b style={{color:upside>=0?C.green:C.red}}>{fmtL(effIV,h.mkt)}</b>{compIV>0&&<span style={{color:C.purple,fontSize:12,fontWeight:700,marginLeft:3}}>●</span>}<span style={{color:C.muted,fontWeight:400}}> {upside>=0?"+":""}{fmt(upside,1)}% upside</span></>
                       :<span style={{color:C.muted}}>— <span style={{fontSize:13}}>tap stock to compute</span></span>}
-                  </div>
+                  </div>}
                 </div>
                 <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,flexShrink:0,marginLeft:8}}>
                   <div style={{textAlign:"right"}}>
                     <div style={{fontSize:17,fontWeight:800}}>{fmtL(h.price,h.mkt)}</div>
                     <div style={{fontSize:13,color:C.muted}}>{fmtS(toSGDlive(h.price,h.mkt))}</div>
-                    <div style={{fontSize:14,color:pos?C.green:C.red,fontWeight:700}}>{fmtPct(gainPct)}</div>
-                    <div style={{fontSize:13,color:C.muted}}>{h.shares.toLocaleString()} sh</div>
+                    {isSold
+                      ?<div style={{fontSize:13,fontWeight:700,color:C.muted}}>0 sh</div>
+                      :<><div style={{fontSize:14,color:pos?C.green:C.red,fontWeight:700}}>{fmtPct(gainPct)}</div>
+                        <div style={{fontSize:13,color:C.muted}}>{h.shares.toLocaleString()} sh</div></>}
                   </div>
                   <div style={{display:"flex",gap:4}} onClick={e=>e.stopPropagation()}>
                     <button onClick={()=>openEditHolding(h)} style={{fontSize:14,padding:"3px 8px",borderRadius:5,border:`1px solid ${C.border}`,background:"transparent",color:C.accent,cursor:"pointer",fontWeight:600}}>Edit</button>
@@ -1810,22 +1830,28 @@ function App(){
                   </div>
                 </div>
               </div>
-              <div style={{background:C.accent+"0D",border:`1px solid ${C.accentDim}20`,borderRadius:8,padding:"7px 10px",marginBottom:7}}>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,marginBottom:4}}>
-                  <div><div style={{fontSize:13,color:C.muted}}>Value</div><div style={{fontSize:14,fontWeight:800}}>{fmtL(localVal,h.mkt,0)}</div><div style={{fontSize:13,color:C.muted}}>{fmtS(sgdVal)}</div></div>
-                  <div style={{textAlign:"center"}}><div style={{fontSize:13,color:C.muted}}>Weight{mktFilter!=="ALL"?` (${mktFilter})`:""}</div><div style={{fontSize:17,fontWeight:800,color:C.accent}}>{w.toFixed(1)}%</div></div>
-                  <div style={{textAlign:"right"}}><div style={{fontSize:13,color:C.muted}}>Unr. P&amp;L</div><div style={{fontSize:14,fontWeight:800,color:pos?C.green:C.red}}>{pos?"+":"-"}{fmtL(Math.abs(localGain),h.mkt,0)}</div><div style={{fontSize:13,color:C.muted}}>{pos?"+":"-"}{fmtS(Math.abs(sgdGain))}</div></div>
+              {isSold?(
+                <div style={{background:C.surface,borderRadius:8,padding:"7px 10px",marginBottom:7,textAlign:"center",fontSize:13,color:C.muted}}>
+                  Position closed · Tap to view trade history
                 </div>
-                <div style={{height:3,borderRadius:2,background:C.border}}><div style={{width:`${Math.min(w*2.5,100)}%`,height:"100%",borderRadius:2,background:C.accent,opacity:0.7}}/></div>
-              </div>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              ):(
+                <div style={{background:C.accent+"0D",border:`1px solid ${C.accentDim}20`,borderRadius:8,padding:"7px 10px",marginBottom:7}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:4,marginBottom:4}}>
+                    <div><div style={{fontSize:13,color:C.muted}}>Value</div><div style={{fontSize:14,fontWeight:800}}>{fmtL(localVal,h.mkt,0)}</div><div style={{fontSize:13,color:C.muted}}>{fmtS(sgdVal)}</div></div>
+                    <div style={{textAlign:"center"}}><div style={{fontSize:13,color:C.muted}}>Weight{mktFilter!=="ALL"?` (${mktFilter})`:""}</div><div style={{fontSize:17,fontWeight:800,color:C.accent}}>{w.toFixed(1)}%</div></div>
+                    <div style={{textAlign:"right"}}><div style={{fontSize:13,color:C.muted}}>Unr. P&amp;L</div><div style={{fontSize:14,fontWeight:800,color:pos?C.green:C.red}}>{pos?"+":"-"}{fmtL(Math.abs(localGain),h.mkt,0)}</div><div style={{fontSize:13,color:C.muted}}>{pos?"+":"-"}{fmtS(Math.abs(sgdGain))}</div></div>
+                  </div>
+                  <div style={{height:3,borderRadius:2,background:C.border}}><div style={{width:`${Math.min(w*2.5,100)}%`,height:"100%",borderRadius:2,background:C.accent,opacity:0.7}}/></div>
+                </div>
+              )}
+              {!isSold&&<div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <div style={{flex:1,marginRight:10}}><ScoreBar score={sc.all} max={10}/></div>
                 <div style={{display:"flex",gap:4}}>
                   <Bdg label={h.moat+" Moat"} bg={h.moat==="Wide"?"#1A2E1A":"#2A2A1A"} color={h.moat==="Wide"?C.green:C.gold} title={moatUpdatedAt?"Moat: "+h.moat+" (Morningstar, updated "+moatUpdatedAt+")":undefined}/>
                   <Bdg label={r.lbl} bg={r.col+"22"} color={r.col}/>
                   {holdingSort==="div"&&h.divYield>0&&<Bdg label={fmt(h.divYield,2)+"% div"} bg={C.gold+"22"} color={C.gold}/>}
                 </div>
-              </div>
+              </div>}
             </div>
           );
         })}
