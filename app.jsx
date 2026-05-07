@@ -1354,9 +1354,9 @@ function App(){
   function parseBrokerMsg(text){
     const t=text.trim();
     const result={};
-    const buyM=t.match(/\bYour\s+(?:\w+\s+)?(Buy|Sell)\b/i);
+    const buyM=t.match(/\bYour\s+(?:[\w/]+\s+)?(Buy|Sell)\b/i);
     if(buyM) result.type=buyM[1].toUpperCase();
-    const nameM=t.match(/Ord Sh,\s+(.+?)\s+\((\w{2,3})\)/i);
+    const nameM=t.match(/(?:Ord Sh|Ord|ETF|Fund|Bond|Stock|Unit),\s+(.+?)\s+\((\w{2,3})\)/i);
     if(nameM){result.companyName=nameM[1].trim();result.mktCode=nameM[2].toUpperCase();}
     const dateM=t.match(/(\d{1,2}\s+\w{3}\s+\d{4})/);
     if(dateM){try{const d=new Date(dateM[1]);result.date=d.toISOString().slice(0,10);}catch(e){}}
@@ -2281,7 +2281,7 @@ function App(){
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
               <div>
                 <div style={lbl}>Ticker Symbol {tickerCheck.status==="found"?"(confirmed)":"(manual entry)"}</div>
-                <input ref={tradeRefs.ticker} style={{...iField,borderColor:tickerCheck.status==="found"?C.green:tickerCheck.status==="suggestions"?C.gold:C.border}} placeholder="TICKER" defaultValue={tradeForm.ticker} onBlur={e=>setTradeForm(f=>({...f,ticker:e.target.value.toUpperCase()}))} onChange={e=>setTradeForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/>
+                <input ref={tradeRefs.ticker} style={{...iField,borderColor:tickerCheck.status==="found"?C.green:tickerCheck.status==="suggestions"?C.gold:C.border}} placeholder="TICKER" defaultValue={tradeForm.ticker} onBlur={e=>setTradeForm(f=>({...f,ticker:e.target.value.toUpperCase()}))}/>
               </div>
               <div>
                 <div style={lbl}>Trade Type</div>
@@ -2296,7 +2296,7 @@ function App(){
             {/* Row 2: Date */}
             <div style={{marginBottom:8}}>
               <div style={lbl}>Trade Date</div>
-              <input ref={tradeRefs.date} type="date" style={iField} defaultValue={tradeForm.date} onBlur={e=>setTradeForm(f=>({...f,date:e.target.value}))} onChange={e=>setTradeForm(f=>({...f,date:e.target.value}))}/>
+              <input ref={tradeRefs.date} type="date" style={iField} defaultValue={tradeForm.date} onBlur={e=>setTradeForm(f=>({...f,date:e.target.value}))}/>
             </div>
 
             {/* Row 3: Exchange/Country separate from Currency */}
@@ -2321,11 +2321,11 @@ function App(){
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
               <div>
                 <div style={lbl}>Price ({tradeForm.ccy} {tradePriceSym})</div>
-                <input ref={tradeRefs.price} type="number" style={iField} placeholder="0.00" defaultValue={tradeForm.price} onBlur={e=>setTradeForm(f=>({...f,price:e.target.value}))} onChange={e=>setTradeForm(f=>({...f,price:e.target.value}))}/>
+                <input ref={tradeRefs.price} type="number" style={iField} placeholder="0.00" defaultValue={tradeForm.price} onBlur={e=>setTradeForm(f=>({...f,price:e.target.value}))}/>
               </div>
               <div>
                 <div style={lbl}>Units / Shares</div>
-                <input ref={tradeRefs.shares} type="number" style={iField} placeholder="0" defaultValue={tradeForm.shares} onBlur={e=>setTradeForm(f=>({...f,shares:e.target.value}))} onChange={e=>setTradeForm(f=>({...f,shares:e.target.value}))}/>
+                <input ref={tradeRefs.shares} type="number" style={iField} placeholder="0" defaultValue={tradeForm.shares} onBlur={e=>setTradeForm(f=>({...f,shares:e.target.value}))}/>
               </div>
             </div>
 
@@ -3516,7 +3516,7 @@ function App(){
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
             <div>
               <div style={lbl}>Ticker Symbol</div>
-              <input ref={holdingRefs.ticker} style={iF} defaultValue={f.ticker||""} onBlur={e=>setF(p=>({...p,ticker:e.target.value.toUpperCase()}))} onChange={e=>setF(p=>({...p,ticker:e.target.value.toUpperCase()}))}/>
+              <input ref={holdingRefs.ticker} style={iF} defaultValue={f.ticker||""} onBlur={e=>setF(p=>({...p,ticker:e.target.value.toUpperCase()}))}/>
             </div>
             <div>
               <div style={lbl}>Market / Exchange</div>
@@ -3526,7 +3526,7 @@ function App(){
             </div>
             <div style={{gridColumn:"1 / -1"}}>
               <div style={lbl}>Company Name</div>
-              <input ref={holdingRefs.name} style={iF} defaultValue={f.name||""} onBlur={e=>setF(p=>({...p,name:e.target.value}))} onChange={e=>setF(p=>({...p,name:e.target.value}))} placeholder="Full company name"/>
+              <input ref={holdingRefs.name} style={iF} defaultValue={f.name||""} onBlur={e=>setF(p=>({...p,name:e.target.value}))} placeholder="Full company name"/>
             </div>
             <div>
               <div style={lbl}>Sector</div>
@@ -3547,11 +3547,11 @@ function App(){
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
             <div>
               <div style={lbl}>Shares / Units</div>
-              <input ref={holdingRefs.shares} type="number" style={iF} defaultValue={f.shares||""} onBlur={e=>setF(p=>({...p,shares:e.target.value}))} onChange={e=>setF(p=>({...p,shares:e.target.value}))}/>
+              <input ref={holdingRefs.shares} type="number" style={iF} defaultValue={f.shares||""} onBlur={e=>setF(p=>({...p,shares:e.target.value}))}/>
             </div>
             <div>
               <div style={lbl}>Avg Cost ({MKT[f.mkt||"US"]?.symbol})</div>
-              <input ref={holdingRefs.avgCost} type="number" style={iF} defaultValue={f.avgCost||""} onBlur={e=>setF(p=>({...p,avgCost:e.target.value}))} onChange={e=>setF(p=>({...p,avgCost:e.target.value}))}/>
+              <input ref={holdingRefs.avgCost} type="number" style={iF} defaultValue={f.avgCost||""} onBlur={e=>setF(p=>({...p,avgCost:e.target.value}))}/>
             </div>
           </div>
 
@@ -3560,19 +3560,19 @@ function App(){
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
             <div>
               <div style={lbl}>Current Price ({MKT[f.mkt||"US"]?.symbol})</div>
-              <input ref={holdingRefs.price} type="number" style={iF} defaultValue={f.price||""} onBlur={e=>setF(p=>({...p,price:e.target.value}))} onChange={e=>setF(p=>({...p,price:e.target.value}))}/>
+              <input ref={holdingRefs.price} type="number" style={iF} defaultValue={f.price||""} onBlur={e=>setF(p=>({...p,price:e.target.value}))}/>
             </div>
             <div>
               <div style={lbl}>Intrinsic Value ({MKT[f.mkt||"US"]?.symbol})</div>
-              <input ref={holdingRefs.intrinsic} type="number" style={iF} defaultValue={f.intrinsic||""} onBlur={e=>setF(p=>({...p,intrinsic:e.target.value}))} onChange={e=>setF(p=>({...p,intrinsic:e.target.value}))} placeholder="Leave blank to auto-calc"/>
+              <input ref={holdingRefs.intrinsic} type="number" style={iF} defaultValue={f.intrinsic||""} onBlur={e=>setF(p=>({...p,intrinsic:e.target.value}))} placeholder="Leave blank to auto-calc"/>
             </div>
             <div>
               <div style={lbl}>P/E Ratio</div>
-              <input ref={holdingRefs.peRatio} type="number" style={iF} defaultValue={f.peRatio||""} onBlur={e=>setF(p=>({...p,peRatio:e.target.value}))} onChange={e=>setF(p=>({...p,peRatio:e.target.value}))}/>
+              <input ref={holdingRefs.peRatio} type="number" style={iF} defaultValue={f.peRatio||""} onBlur={e=>setF(p=>({...p,peRatio:e.target.value}))}/>
             </div>
             <div>
               <div style={lbl}>Dividend Yield (%)</div>
-              <input ref={holdingRefs.divYield} type="number" style={iF} defaultValue={f.divYield||""} onBlur={e=>setF(p=>({...p,divYield:e.target.value}))} onChange={e=>setF(p=>({...p,divYield:e.target.value}))}/>
+              <input ref={holdingRefs.divYield} type="number" style={iF} defaultValue={f.divYield||""} onBlur={e=>setF(p=>({...p,divYield:e.target.value}))}/>
             </div>
           </div>
 
