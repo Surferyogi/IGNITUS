@@ -429,11 +429,25 @@ function App(){
       setLoadMsg('Got data: '+JSON.stringify({h:(data.holdings||[]).length,t:(data.trades||[]).length}));
       if(data.holdings&&data.holdings.length>0){
         const loadedTrades=data.trades||[];
+        // Recalculate profit for historical SELL trades that have profit=0 or null
+        // Uses weighted average cost of all prior BUY trades for that ticker
+        const tradesWithProfit=loadedTrades.map(t=>{
+          if(t.type!=="SELL") return t;
+          if(t.profit!=null&&t.profit!==0) return t; // already has valid profit
+          // Compute from buys before this sell (sorted by date)
+          const priorBuys=loadedTrades.filter(b=>
+            b.type==="BUY" && b.ticker===t.ticker && b.date<=t.date
+          );
+          const totBuyShares=priorBuys.reduce((s,b)=>s+b.shares,0);
+          const totBuyCost=priorBuys.reduce((s,b)=>s+b.shares*b.price,0);
+          if(totBuyShares===0) return t;
+          const avgCost=totBuyCost/totBuyShares;
+          return {...t, profit:parseFloat(((t.price-avgCost)*t.shares).toFixed(2))};
+        });
         // Rebuild holdings from trades to ensure net shares + avgCost are accurate
-        // Falls back to DB holdings for stocks with no trade records
-        const rebuiltOnLoad=rebuildHoldingsFromTrades(loadedTrades, data.holdings);
+        const rebuiltOnLoad=rebuildHoldingsFromTrades(tradesWithProfit, data.holdings);
         setHoldings(rebuiltOnLoad.length>0?rebuiltOnLoad:data.holdings);
-        setTrades(loadedTrades);
+        setTrades(tradesWithProfit);
         const fb={};
         (data.trades||[]).filter(t=>t.type==='BUY').forEach(t=>{
           if(!fb[t.ticker]||t.date<fb[t.ticker])fb[t.ticker]=t.date;
@@ -442,6 +456,11 @@ function App(){
         if(data.senate&&data.senate.length>0){
           SENATE.length=0;
           data.senate.forEach(s=>SENATE.push(s));
+        }
+        // Persist corrected profits back to Supabase if any were recalculated
+        const hadZeroProfits=loadedTrades.some(t=>t.type==="SELL"&&(t.profit===0||t.profit==null));
+        if(hadZeroProfits&&window.portfolioDB) {
+          window.portfolioDB.updateTrades(tradesWithProfit).catch(e=>console.warn('Profit backfill:',e));
         }
         fetchLivePrices(data.holdings);
         fetchLiveFx();
@@ -1179,7 +1198,7 @@ function App(){
   const totalDivSGD=useMemo(()=>holdings.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares,h.mkt),0),[holdings,refreshKey]);
   const totalShares=useMemo(()=>holdings.reduce((s,h)=>s+h.shares,0),[holdings,refreshKey]);
   const avgCostSGD=totalShares?totalCostSGD/totalShares:0;
-  const realizedSGD=useMemo(()=>trades.filter(t=>t.type==="SELL").reduce((s,t)=>s+toSGDlive(t.profit||0,t.mkt),0),[trades,refreshKey]);
+  const realizedSGD=useMemo(()=>trades.filter(t=>t.type==="SELL").reduce((s,t)=>s+ccyToSGD(t.profit||0,t.ccy||t.mkt),0),[trades,fxRates,refreshKey]);
   const hdrHoldings=useMemo(()=>{
     const active=holdings.filter(h=>!h.fullySold);
     return mktFilter==="ALL"?active:active.filter(h=>h.mkt===mktFilter);
@@ -1198,7 +1217,7 @@ function App(){
       const h=holdings.find(hh=>hh.ticker===t.ticker);
       return h?h.mkt===mktFilter:t.mkt===mktFilter;
     });
-    return mktTrades.filter(t=>t.type==="SELL").reduce((s,t)=>s+toSGDlive(t.profit||0,t.mkt),0);
+    return mktTrades.filter(t=>t.type==="SELL").reduce((s,t)=>s+ccyToSGD(t.profit||0,t.ccy||t.mkt),0);
   },[trades,holdings,mktFilter,refreshKey]);
   const hdrDivSGD=useMemo(()=>
     hdrHoldings.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares,h.mkt),0),
