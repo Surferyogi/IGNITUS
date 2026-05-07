@@ -384,6 +384,7 @@ function App(){
   const [aiText,setAiText]=useState({});
   const [aiLoad,setAiLoad]=useState({});
   const [showTradeForm,setShowTradeForm]=useState(false);
+  const [dupeWarning,setDupeWarning]=useState(null); // {trade, pending} when duplicate detected
   const [showPasteParser,setShowPasteParser]=useState(false); // broker msg parser
   const [pasteText,setPasteText]=useState("");
   const [parsedTrade,setParsedTrade]=useState(null);    // result of parse
@@ -1276,11 +1277,26 @@ function App(){
     return rebuilt;
   }
 
-  function submitTrade(){
+  function submitTrade(forceSubmit=false){
     const {ticker,type,date,price,shares,mkt,ccy}=tradeForm;
     if(!ticker||!price||!shares||!date)return;
     const p=parseFloat(price),s=parseInt(shares),tU=ticker.toUpperCase().trim();
     if(isNaN(p)||isNaN(s)||s<=0||p<=0)return;
+
+    // ── Duplicate check (skip for edits) ─────────────────────────────────────
+    if(editTradeId==null&&!forceSubmit){
+      const dupe=trades.find(t=>
+        t.ticker===tU &&
+        t.type===type &&
+        t.date===date &&
+        Math.abs(t.price-p)<0.001 &&
+        t.shares===s
+      );
+      if(dupe){
+        setDupeWarning({trade:dupe,pending:{ticker:tU,type,date,price:p,shares:s,mkt,ccy}});
+        return; // stop here — wait for user decision
+      }
+    }
 
     let newTrades;
     if(editTradeId!=null){
@@ -1296,6 +1312,7 @@ function App(){
     setHoldings(rebuiltH);
     if(window.portfolioDB){window.portfolioDB.updateHoldings(rebuiltH).catch(e=>console.error('DB:',e));}
     setShowTradeForm(false);
+    setDupeWarning(null);
     setTradeForm({ticker:"",type:"BUY",date:new Date().toISOString().slice(0,10),price:"",shares:"",mkt:"US",ccy:"USD"});
     markDirty();
   }
@@ -3576,6 +3593,28 @@ function App(){
       )}
 
       {sel&&<ErrBoundary><HoldingDetail/></ErrBoundary>}
+      {dupeWarning&&(
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.82)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+          <div style={{background:C.card,borderRadius:16,padding:24,maxWidth:380,width:"100%",border:`1px solid ${C.red}60`}}>
+            <div style={{fontSize:18,fontWeight:800,color:C.red,marginBottom:6}}>⚠ Duplicate Trade Detected</div>
+            <div style={{fontSize:13,color:C.muted,marginBottom:14,lineHeight:1.6}}>An identical trade already exists. This could be a partial fill or a second lot.</div>
+            {[["Existing",dupeWarning.trade,C.border],["New (duplicate)",dupeWarning.pending,C.red+"40"]].map(([label,t,borderCol])=>(
+              <div key={label} style={{background:C.surface,borderRadius:10,padding:"10px 14px",marginBottom:10,border:`1px solid ${borderCol}`}}>
+                <div style={{fontSize:11,color:label.includes("dup")?C.red:C.muted,fontWeight:700,marginBottom:6,textTransform:"uppercase",letterSpacing:"0.06em"}}>{label}</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"5px 8px",fontSize:13}}>
+                  {[["Ticker",t.ticker],["Type",t.type],["Date",t.date],["Price",t.price],["Qty",(t.shares||0).toLocaleString()],["Market",t.mkt]].map(([l,v])=>(
+                    <div key={l}><div style={{fontSize:10,color:C.muted}}>{l}</div><div style={{fontWeight:700,color:t.type==="BUY"?C.green:C.red}}>{v}</div></div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <div style={{display:"flex",gap:10,marginTop:4}}>
+              <button onClick={()=>setDupeWarning(null)} style={{flex:1,padding:"13px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,color:C.text,fontSize:14,fontWeight:700,cursor:"pointer"}}>✕ Cancel</button>
+              <button onClick={()=>submitTrade(true)} style={{flex:1,padding:"13px",borderRadius:10,border:`1px solid ${C.red}`,background:C.red+"18",color:C.red,fontSize:14,fontWeight:700,cursor:"pointer"}}>Add Anyway</button>
+            </div>
+          </div>
+        </div>
+      )}
       {holdingEditId!=null&&<EditHoldingModal/>}
       {deleteConfirm!=null&&<DeleteConfirmModal/>}
     </div>
