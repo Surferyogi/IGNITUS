@@ -3408,6 +3408,270 @@ function App(){
     );
   }
 
+  // ── RECONCILIATION VIEW ──────────────────────────────────────────────────────
+  function ReconciliationView(){
+    const [reconFilter,setReconFilter]=React.useState("all"); // all | mismatch | notrade
+    const [expandedTicker,setExpandedTicker]=React.useState(null);
+    const [fixing,setFixing]=React.useState({});
+    const [fixed,setFixed]=React.useState({});
+
+    // ── Simulate WAVG per ticker from trades ─────────────────────────────────
+    const reconData=React.useMemo(()=>{
+      // Build per-ticker trade history
+      const byTicker={};
+      [...trades].sort((a,b)=>(a.date||"").localeCompare(b.date||"")).forEach(t=>{
+        if(!byTicker[t.ticker]) byTicker[t.ticker]=[];
+        byTicker[t.ticker].push(t);
+      });
+
+      return holdings.map(h=>{
+        const tradeList=byTicker[h.ticker]||[];
+        const hasTrades=tradeList.length>0;
+
+        // Run WAVG simulation
+        let runShares=0, runAvg=0;
+        const annotated=tradeList.map(t=>{
+          if(t.type==="BUY"){
+            runAvg=(runShares*runAvg+t.shares*t.price)/(runShares+t.shares);
+            runShares+=t.shares;
+          } else {
+            runShares=Math.max(0,runShares-t.shares);
+            // avg cost unchanged on sell
+          }
+          return{...t,_runShares:runShares,_runAvg:parseFloat(runAvg.toFixed(4))};
+        });
+
+        const calcShares=runShares;
+        const calcAvg=parseFloat(runAvg.toFixed(4));
+
+        const sharesMismatch=hasTrades&&Math.abs(h.shares-calcShares)>0.001;
+        const avgMismatch=hasTrades&&h.avgCost>0&&calcAvg>0&&Math.abs(h.avgCost-calcAvg)>0.01;
+        const hasMismatch=sharesMismatch||avgMismatch;
+
+        return{
+          h,
+          tradeList:annotated,
+          hasTrades,
+          calcShares,
+          calcAvg,
+          sharesMismatch,
+          avgMismatch,
+          hasMismatch,
+        };
+      }).sort((a,b)=>{
+        // Mismatches first, then no-trades, then OK
+        if(a.hasMismatch&&!b.hasMismatch) return -1;
+        if(!a.hasMismatch&&b.hasMismatch) return 1;
+        if(!a.hasTrades&&b.hasTrades) return -1;
+        if(a.hasTrades&&!b.hasTrades) return 1;
+        return a.h.ticker.localeCompare(b.h.ticker);
+      });
+    },[holdings,trades]);
+
+    const mismatchCount=reconData.filter(r=>r.hasMismatch).length;
+    const noTradeCount=reconData.filter(r=>!r.hasTrades).length;
+    const okCount=reconData.filter(r=>r.hasTrades&&!r.hasMismatch).length;
+
+    const displayed=reconData.filter(r=>{
+      if(reconFilter==="mismatch") return r.hasMismatch;
+      if(reconFilter==="notrade") return !r.hasTrades;
+      if(reconFilter==="ok") return r.hasTrades&&!r.hasMismatch;
+      return true;
+    });
+
+    async function applyFix(r){
+      setFixing(p=>({...p,[r.h.ticker]:true}));
+      const updated=holdings.map(h=>
+        h.ticker===r.h.ticker
+          ?{...h,shares:r.calcShares,avgCost:r.calcAvg,
+            fullySold:r.calcShares<=0,
+            ...(r.calcShares<=0?{avgCost:0}:{})}
+          :h
+      );
+      setHoldings(updated);
+      if(window.portfolioDB){
+        try{ await window.portfolioDB.updateHoldings(updated); }
+        catch(e){ console.error('[recon] DB fix failed:',e); }
+      }
+      setFixed(p=>({...p,[r.h.ticker]:true}));
+      setFixing(p=>({...p,[r.h.ticker]:false}));
+    }
+
+    const PILL_ACTIVE={padding:"6px 12px",borderRadius:16,fontSize:13,fontWeight:700,
+      background:C.accent,color:"#000",border:`1px solid ${C.accent}`,cursor:"pointer"};
+    const PILL_IDLE={padding:"6px 12px",borderRadius:16,fontSize:13,fontWeight:500,
+      background:"transparent",color:C.muted,border:`1px solid ${C.border}`,cursor:"pointer"};
+
+    return(
+      <>
+        {/* Header */}
+        <div style={{...card,background:"#0A1020",border:`1px solid ${C.accent}30`,marginBottom:12}}>
+          <div style={{fontSize:15,fontWeight:800,color:C.accent,marginBottom:6}}>🔍 PORTFOLIO AUDIT</div>
+          <div style={{fontSize:13,color:C.muted,lineHeight:1.6,marginBottom:10}}>
+            Compares stored holdings against trade records. Runs a full WAVG simulation per ticker.
+            Tap any row to inspect all trades. Approve fixes one by one.
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,textAlign:"center"}}>
+            <div style={{background:C.red+"18",borderRadius:8,padding:"8px 4px"}}>
+              <div style={{fontSize:22,fontWeight:800,color:C.red}}>{mismatchCount}</div>
+              <div style={{fontSize:12,color:C.muted}}>Mismatches</div>
+            </div>
+            <div style={{background:C.gold+"18",borderRadius:8,padding:"8px 4px"}}>
+              <div style={{fontSize:22,fontWeight:800,color:C.gold}}>{noTradeCount}</div>
+              <div style={{fontSize:12,color:C.muted}}>No trades</div>
+            </div>
+            <div style={{background:C.green+"18",borderRadius:8,padding:"8px 4px"}}>
+              <div style={{fontSize:22,fontWeight:800,color:C.green}}>{okCount}</div>
+              <div style={{fontSize:12,color:C.muted}}>OK</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Filter pills */}
+        <div style={{display:"flex",gap:6,marginBottom:12,overflowX:"auto"}}>
+          {[["all","All",""],["mismatch","❌ Mismatch",C.red],["notrade","⚠ No Trades",C.gold],["ok","✅ OK",C.green]].map(([key,label,col])=>(
+            <button key={key} onClick={()=>setReconFilter(key)}
+              style={reconFilter===key
+                ?{...PILL_ACTIVE,...(col?{background:col+"22",color:col,borderColor:col}:{})}
+                :PILL_IDLE}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Per-ticker rows */}
+        {displayed.map(r=>{
+          const isExpanded=expandedTicker===r.h.ticker;
+          const isFixed=fixed[r.h.ticker];
+          const isFix=fixing[r.h.ticker];
+          const status=isFixed?"fixed":r.hasMismatch?"mismatch":!r.hasTrades?"notrade":"ok";
+          const borderCol=status==="mismatch"?C.red:status==="notrade"?C.gold:status==="fixed"?C.green:C.border;
+
+          return(
+            <div key={r.h.ticker} style={{...card,borderLeft:`4px solid ${borderCol}`,marginBottom:8}}>
+              {/* Header row — tap to expand */}
+              <div style={{cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}
+                onClick={()=>setExpandedTicker(isExpanded?null:r.h.ticker)}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:3}}>
+                    <span style={{fontWeight:800,fontSize:16}}>{r.h.ticker}</span>
+                    <Chip mkt={r.h.mkt}/>
+                    {status==="mismatch"&&<span style={{fontSize:12,color:C.red,fontWeight:700,background:C.red+"15",padding:"1px 6px",borderRadius:4}}>❌ MISMATCH</span>}
+                    {status==="notrade"&&<span style={{fontSize:12,color:C.gold,fontWeight:700,background:C.gold+"15",padding:"1px 6px",borderRadius:4}}>⚠ NO TRADES</span>}
+                    {status==="ok"&&<span style={{fontSize:12,color:C.green,fontWeight:700}}>✅</span>}
+                    {status==="fixed"&&<span style={{fontSize:12,color:C.green,fontWeight:700,background:C.green+"15",padding:"1px 6px",borderRadius:4}}>✅ FIXED</span>}
+                  </div>
+                  <div style={{fontSize:13,color:C.muted,marginBottom:4,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",maxWidth:220}}>{r.h.name}</div>
+                  {/* Side-by-side comparison */}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"4px 10px",fontSize:12}}>
+                    <div>
+                      <div style={{color:C.muted,marginBottom:1}}>Stored shares</div>
+                      <div style={{fontWeight:700,color:r.sharesMismatch?C.red:C.text}}>{r.h.shares.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div style={{color:C.muted,marginBottom:1}}>Calc. shares</div>
+                      <div style={{fontWeight:700,color:r.sharesMismatch?C.green:C.text}}>
+                        {r.hasTrades?r.calcShares.toLocaleString():"—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{color:C.muted,marginBottom:1}}>Stored avg cost</div>
+                      <div style={{fontWeight:700,color:r.avgMismatch?C.red:C.text}}>{fmtL(r.h.avgCost,r.h.mkt)}</div>
+                    </div>
+                    <div>
+                      <div style={{color:C.muted,marginBottom:1}}>Calc. avg cost</div>
+                      <div style={{fontWeight:700,color:r.avgMismatch?C.green:C.text}}>
+                        {r.hasTrades?fmtL(r.calcAvg,r.h.mkt):"—"}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6,flexShrink:0,marginLeft:10}}>
+                  <span style={{fontSize:18,color:C.muted}}>{isExpanded?"▲":"▼"}</span>
+                  <div style={{fontSize:12,color:C.muted}}>{r.tradeList.length} trade{r.tradeList.length!==1?"s":""}</div>
+                </div>
+              </div>
+
+              {/* Fix button */}
+              {r.hasMismatch&&!isFixed&&(
+                <div style={{marginTop:10}} onClick={e=>e.stopPropagation()}>
+                  <button onClick={()=>applyFix(r)} disabled={isFix} style={{
+                    width:"100%",padding:"10px",borderRadius:8,border:`1px solid ${C.green}`,
+                    background:isFix?C.surface:C.green+"18",
+                    color:isFix?C.muted:C.green,fontSize:13,fontWeight:700,
+                    cursor:isFix?"not-allowed":"pointer",
+                  }}>
+                    {isFix?"Applying fix...":"✅ Apply Fix — set shares="+r.calcShares+" avg="+fmtL(r.calcAvg,r.h.mkt)}
+                  </button>
+                </div>
+              )}
+
+              {/* Expanded trade list */}
+              {isExpanded&&(
+                <div style={{marginTop:12,borderTop:`1px solid ${C.border}`,paddingTop:10}}>
+                  {r.tradeList.length===0?(
+                    <div style={{fontSize:13,color:C.muted,textAlign:"center",padding:"8px 0"}}>
+                      No trade records found for this stock. Holdings were entered manually.
+                    </div>
+                  ):(
+                    <>
+                      {/* Column headers */}
+                      <div style={{display:"grid",gridTemplateColumns:"80px 1fr 1fr 50px 40px 50px",gap:"2px 6px",fontSize:11,
+                        color:C.muted,fontWeight:700,textTransform:"uppercase",letterSpacing:"0.05em",
+                        marginBottom:6,paddingBottom:6,borderBottom:`1px solid ${C.border}`}}>
+                        <div>Date</div>
+                        <div>Price</div>
+                        <div>Qty</div>
+                        <div>Ccy</div>
+                        <div>Mkt</div>
+                        <div style={{textAlign:"right"}}>Bal.</div>
+                      </div>
+                      {r.tradeList.map((t,i)=>(
+                        <div key={t.id||i} style={{
+                          display:"grid",gridTemplateColumns:"80px 1fr 1fr 50px 40px 50px",
+                          gap:"2px 6px",fontSize:13,
+                          padding:"5px 0",
+                          borderBottom:i<r.tradeList.length-1?`1px solid ${C.border}22`:"none",
+                          background:t.type==="BUY"?C.green+"05":C.red+"05",
+                        }}>
+                          <div style={{color:C.muted,fontSize:12}}>{t.date}</div>
+                          <div style={{fontWeight:700,color:t.type==="BUY"?C.green:C.red}}>
+                            {t.type==="BUY"?"+":"-"}{fmtL(t.price,t.mkt)}
+                          </div>
+                          <div style={{fontWeight:600}}>{t.shares.toLocaleString()}</div>
+                          <div style={{fontSize:12,color:C.muted}}>{t.ccy||"—"}</div>
+                          <div style={{fontSize:12,color:C.muted}}>{t.mkt||"—"}</div>
+                          <div style={{textAlign:"right",fontSize:12,color:C.mutedLight,fontWeight:600}}>
+                            {t._runShares.toLocaleString()}
+                          </div>
+                        </div>
+                      ))}
+                      {/* Running balance footer */}
+                      <div style={{display:"flex",justifyContent:"space-between",marginTop:8,
+                        padding:"6px 8px",background:C.surface,borderRadius:6,fontSize:12}}>
+                        <span style={{color:C.muted}}>Final balance from trades:</span>
+                        <span style={{fontWeight:700,color:r.calcShares>0?C.text:C.muted}}>
+                          {r.calcShares.toLocaleString()} sh @ {fmtL(r.calcAvg,r.h.mkt)} avg
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {displayed.length===0&&(
+          <div style={{...card,textAlign:"center",padding:"32px 16px"}}>
+            <div style={{fontSize:28,marginBottom:8}}>✅</div>
+            <div style={{fontSize:15,fontWeight:700}}>All holdings match trade records</div>
+          </div>
+        )}
+      </>
+    );
+  }
+
   function SummaryView(){
     return(
       <>
@@ -4031,6 +4295,7 @@ function App(){
     {id:"trades",   icon:"💱",label:"Trades"},
     {id:"alerts",   icon:"🔔",label:"Alerts"},
     {id:"summary",  icon:"📋",label:"Summary"},
+    {id:"recon",    icon:"🔍",label:"Audit"},
   ];
   const refreshTs=lastRefresh?lastRefresh.toLocaleTimeString("en-SG",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):null;
   return(
@@ -4134,6 +4399,7 @@ function App(){
         {tab==="trades"   &&<TradesView/>}
         {tab==="alerts"   &&<AlertsView/>}
         {tab==="summary"  &&<SummaryView/>}
+        {tab==="recon"    &&<ReconciliationView/>}
       </div>
 
       {/* Floating refresh button — visible when there are pending changes */}
