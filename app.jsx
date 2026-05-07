@@ -1,4 +1,3 @@
-
 const { useState, useMemo, useEffect, useCallback } = React;
 
 let ALL_H = [];
@@ -385,6 +384,10 @@ function App(){
   const [aiText,setAiText]=useState({});
   const [aiLoad,setAiLoad]=useState({});
   const [showTradeForm,setShowTradeForm]=useState(false);
+  const [showPasteParser,setShowPasteParser]=useState(false); // broker msg parser
+  const [pasteText,setPasteText]=useState("");
+  const [parsedTrade,setParsedTrade]=useState(null);    // result of parse
+  const [parseError,setParseError]=useState("");
   const [editTradeId,setEditTradeId]=useState(null);
   const [tradeForm,setTradeForm]=useState({ticker:"",type:"BUY",date:new Date().toISOString().slice(0,10),price:"",shares:"",mkt:"US",ccy:"USD"});
   const [holdingEditId,setHoldingEditId]=useState(null);
@@ -1297,6 +1300,57 @@ function App(){
     markDirty();
   }
 
+  // ── Broker message parser ────────────────────────────────────────────────────
+  function parseBrokerMsg(text){
+    const t=text.trim();
+    const result={};
+    const buyM=t.match(/\bYour\s+(Buy|Sell)\b/i);
+    if(buyM) result.type=buyM[1].toUpperCase();
+    const nameM=t.match(/Ord Sh,\s+(.+?)\s+\((\w{2,3})\)/i);
+    if(nameM){result.companyName=nameM[1].trim();result.mktCode=nameM[2].toUpperCase();}
+    const dateM=t.match(/(\d{1,2}\s+\w{3}\s+\d{4})/);
+    if(dateM){try{const d=new Date(dateM[1]);result.date=d.toISOString().slice(0,10);}catch(e){}}
+    const priceM=t.match(/Filled price:\s*([A-Z]{2,3})\s+([\d,]+\.?\d*)/i);
+    if(priceM){result.ccy=priceM[1].toUpperCase();result.price=parseFloat(priceM[2].replace(/,/g,''));}
+    const qtyM=t.match(/Filled Qty:\s*([\d,]+)/i);
+    if(qtyM) result.shares=parseInt(qtyM[1].replace(/,/g,''),10);
+    // Map to Ignitus market codes
+    const mktMap={SG:'SG',US:'US',HK:'CN',JP:'JP',AU:'AU',GB:'EU',FR:'EU',DE:'EU',NY:'US'};
+    const ccyMap={SGD:'SG',USD:'US',HKD:'CN',JPY:'JP',EUR:'EU',GBP:'EU',AUD:'AU'};
+    if(result.mktCode) result.mkt=mktMap[result.mktCode]||result.mktCode;
+    else if(result.ccy) result.mkt=ccyMap[result.ccy]||'US';
+    // Try to match company name to existing holding ticker
+    if(result.companyName){
+      const lower=result.companyName.toLowerCase();
+      const match=holdings.find(h=>
+        h.name&&h.name.toLowerCase().includes(lower.slice(0,10))||
+        lower.includes((h.name||'').toLowerCase().slice(0,10))
+      );
+      if(match){result.ticker=match.ticker;result.matchedName=match.name;}
+    }
+    return result;
+  }
+
+  function applyParsedTrade(){
+    if(!parsedTrade) return;
+    const p=parsedTrade;
+    setTradeForm({
+      ticker:p.ticker||'',
+      type:p.type||'BUY',
+      date:p.date||new Date().toISOString().slice(0,10),
+      price:p.price?String(p.price):'',
+      shares:p.shares?String(p.shares):'',
+      mkt:p.mkt||'SG',
+      ccy:p.ccy||'SGD',
+    });
+    if(p.ticker) setTickerSearchTerm(p.ticker);
+    setShowPasteParser(false);
+    setShowTradeForm(true);
+    setEditTradeId(null);
+    setPasteText('');
+    setParsedTrade(null);
+  }
+
   function deleteTrade(id){
     const newTrades=trades.filter(t=>t.id!==id);
     setTrades(newTrades);
@@ -1886,10 +1940,79 @@ function App(){
           </div>
         </div>
 
-        {/* Add / Edit Trade Button */}
-        <button onClick={()=>{if(showTradeForm&&editTradeId==null){setShowTradeForm(false);}else{setShowTradeForm(v=>!v);setEditTradeId(null);setTradeForm({ticker:"",type:"BUY",date:new Date().toISOString().slice(0,10),price:"",shares:"",mkt:"US",ccy:"USD"});setTickerCheck({status:"idle",message:"",suggestions:[]});setTickerSearchTerm("");}}} style={{width:"100%",padding:"11px",borderRadius:10,border:`1px dashed ${showTradeForm?C.accent:C.border}`,background:showTradeForm&&editTradeId==null?C.accent+"12":"transparent",color:showTradeForm&&editTradeId==null?C.accent:C.muted,fontSize:16,fontWeight:700,cursor:"pointer",marginBottom:10}}>
-          {showTradeForm&&editTradeId==null?"✕ Cancel":"+ Add New Trade"}
-        </button>
+        {/* Add / Edit Trade Button + Paste Parser Button */}
+        <div style={{display:"flex",gap:8,marginBottom:10}}>
+          <button onClick={()=>{if(showTradeForm&&editTradeId==null){setShowTradeForm(false);}else{setShowTradeForm(v=>!v);setEditTradeId(null);setTradeForm({ticker:"",type:"BUY",date:new Date().toISOString().slice(0,10),price:"",shares:"",mkt:"US",ccy:"USD"});setTickerCheck({status:"idle",message:"",suggestions:[]});setTickerSearchTerm("");setShowPasteParser(false);}}} style={{flex:1,padding:"11px",borderRadius:10,border:`1px dashed ${showTradeForm?C.accent:C.border}`,background:showTradeForm&&editTradeId==null?C.accent+"12":"transparent",color:showTradeForm&&editTradeId==null?C.accent:C.muted,fontSize:15,fontWeight:700,cursor:"pointer"}}>
+            {showTradeForm&&editTradeId==null?"✕ Cancel":"+ Add New Trade"}
+          </button>
+          <button onClick={()=>{setShowPasteParser(v=>!v);setShowTradeForm(false);setParsedTrade(null);setPasteText('');setParseError('');}} title="Paste broker confirmation to auto-fill trade" style={{padding:"11px 14px",borderRadius:10,border:`1px dashed ${showPasteParser?C.gold:C.border}`,background:showPasteParser?C.gold+"15":"transparent",color:showPasteParser?C.gold:C.muted,fontSize:15,fontWeight:700,cursor:"pointer",flexShrink:0}}>
+            📋
+          </button>
+        </div>
+
+        {/* Broker Message Paste Parser */}
+        {showPasteParser&&(
+          <div style={{...card,border:`1px solid ${C.gold}40`,background:C.surface,marginBottom:14}}>
+            <div style={{fontSize:15,fontWeight:700,color:C.gold,marginBottom:4}}>📋 Paste Broker Confirmation</div>
+            <div style={{fontSize:12,color:C.muted,marginBottom:10}}>Paste your broker SMS / email confirmation. Supports DBS and similar formats.</div>
+            <textarea
+              rows={4}
+              placeholder={"e.g. Fr DBS: Your Sell for Ord Sh, Hotung Investment Holdings Ltd (SG) has been filled on 07 May 2026 09:03:28. Filled price: SGD 1.64. Filled Qty: 3800. Qty left: 0."}
+              value={pasteText}
+              onChange={e=>setPasteText(e.target.value)}
+              style={{width:"100%",background:C.bg,border:`1px solid ${C.border}`,color:C.text,borderRadius:8,padding:"10px",fontSize:12,resize:"vertical",boxSizing:"border-box",fontFamily:"monospace",lineHeight:1.5}}
+            />
+            <div style={{display:"flex",gap:8,marginTop:8}}>
+              <button onClick={()=>{
+                setParseError('');
+                const r=parseBrokerMsg(pasteText);
+                if(!r.type||!r.price||!r.shares){
+                  setParseError("Could not parse — check format. Needs: Buy/Sell, Filled price, Filled Qty.");
+                  setParsedTrade(null);
+                } else {
+                  setParsedTrade(r);
+                }
+              }} style={{flex:1,padding:"10px",borderRadius:8,border:`1px solid ${C.gold}`,background:C.gold+"18",color:C.gold,fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                🔍 Parse
+              </button>
+              {parsedTrade&&(
+                <button onClick={applyParsedTrade} style={{flex:1,padding:"10px",borderRadius:8,border:`1px solid ${C.green}`,background:C.green+"18",color:C.green,fontSize:13,fontWeight:700,cursor:"pointer"}}>
+                  ✅ Apply to Trade Form
+                </button>
+              )}
+            </div>
+            {parseError&&<div style={{fontSize:12,color:C.red,marginTop:8}}>{parseError}</div>}
+            {parsedTrade&&(
+              <div style={{marginTop:12,background:C.bg,borderRadius:8,padding:"10px 12px",border:`1px solid ${C.green}30`}}>
+                <div style={{fontSize:12,fontWeight:700,color:C.green,marginBottom:8}}>✅ Parsed successfully</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"6px 12px",fontSize:12}}>
+                  {[
+                    ["Action",parsedTrade.type],
+                    ["Date",parsedTrade.date||"—"],
+                    ["Price",parsedTrade.price?parsedTrade.ccy+" "+parsedTrade.price:"—"],
+                    ["Qty",parsedTrade.shares?.toLocaleString()||"—"],
+                    ["Market",parsedTrade.mkt||"—"],
+                    ["Company",parsedTrade.companyName||"—"],
+                  ].map(([label,val])=>(
+                    <div key={label}>
+                      <div style={{fontSize:10,color:C.muted}}>{label}</div>
+                      <div style={{fontWeight:700,color:label==="Action"?(parsedTrade.type==="BUY"?C.green:C.red):C.text}}>{val}</div>
+                    </div>
+                  ))}
+                </div>
+                {parsedTrade.ticker?(
+                  <div style={{marginTop:8,fontSize:12,color:C.accent}}>
+                    ✅ Matched portfolio holding: <b>{parsedTrade.ticker}</b> ({parsedTrade.matchedName})
+                  </div>
+                ):(
+                  <div style={{marginTop:8,fontSize:12,color:C.gold}}>
+                    ⚠ No matching holding found — you can search manually in the trade form
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Trade Entry / Edit Form */}
         {showTradeForm&&(
