@@ -1086,6 +1086,16 @@ function App(){
 
   useEffect(()=>{
     if(!window.portfolioDB)return;
+    // Save trades to DB whenever they change (debounced 600ms)
+    const timer=setTimeout(async()=>{
+      try{
+        await window.portfolioDB.updateTrades(trades);
+        console.log('[DB] trades saved:',trades.length);
+      }catch(e){
+        console.error('DB save trades failed:',e);
+      }
+    },600);
+    return()=>clearTimeout(timer);
   },[trades]);
 
   const markDirty=()=>setPendingChanges(n=>n+1);
