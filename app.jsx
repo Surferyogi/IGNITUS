@@ -1799,7 +1799,7 @@ function App(){
                   const taxRate=getDivTax(h.mkt);
                   const netDiv=annDiv*(1-taxRate);
                   return(
-                    <div key={h.ticker} style={{...mBox,textAlign:"left"}}>
+                    <div key={h.ticker} style={{background:C.surface,borderRadius:6,padding:"5px 7px",textAlign:"left"}}>
                       <div style={{fontSize:14,fontWeight:700}}>{h.ticker}</div>
                       <div style={{fontSize:14,fontWeight:800,color:C.gold}}>{fmt(h.divYield,2)}%</div>
                       <div style={{fontSize:12,color:C.muted}}>{fmtS(annDiv)}/yr gross</div>
