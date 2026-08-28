@@ -40,9 +40,10 @@ const fmtL=(n,mkt,d=2)=>n==null?"--":(MKT[mkt]?.symbol??"$")+fmt(Math.abs(n),d);
 const fmtS=(n,d=2)=>n==null?"--":"S$"+fmt(Math.abs(n),d);
 const SECTORS=["Technology","Healthcare","Financials","Consumer Disc.","Industrials","Energy","Utilities","Materials","Real Estate","Comm. Services","Consumer Staples","Unknown"];
 const MS_STYLES=["Large Growth","Large Blend","Large Value","Mid Growth","Mid Blend","Mid Value","Small Growth","Small Blend","Small Value"];
-// SCOL is INDEX-ALIGNED to SECTORS - L2979 and L5180 use SCOL[i] with no modulo.
-// Adding a sector REQUIRES adding a colour here or the slice renders undefined.
-const SCOL=[C.accent,C.green,C.gold,C.purple,"#FF8C42","#FF4D6A","#62D2E8","#C084FC","#FDE68A","#A3E635","#FB923C","#94A3B8"];
+// SCOL no longer needs to match SECTORS length: sector colour now goes through
+// secCol(), which applies modulo and falls back to grey on an unknown sector.
+// Kept longer than SECTORS so derived (data-only) sectors still get a distinct hue.
+const SCOL=[C.accent,C.green,C.gold,C.purple,"#FF8C42","#FF4D6A","#62D2E8","#C084FC","#FDE68A","#A3E635","#FB923C","#94A3B8","#F472B6","#2DD4BF"];
 
 // Infer correct market code from ticker symbol suffix
 // Used to validate and auto-correct wrong mkt assignments
@@ -2976,10 +2977,30 @@ function App(){
   const wt=h=>filteredTotalSGD?(toSGDlive(h.price*h.shares,h.mkt)/filteredTotalSGD)*100:0;
   const wtTotal=h=>totalValSGD?(toSGDlive(h.price*h.shares,h.mkt)/totalValSGD)*100:0;
 
+  // ── v2026:08:28 AUDIT FIX (Option C): the sector bucket list is DERIVED, not fixed ──
+  // All three sector surfaces used a fixed-list map with strict equality, so a holding
+  // whose sector string was absent from that list was SILENTLY DROPPED from display.
+  // Measured at the time of the fix: 4 holdings, S$316,703, 11.1% of the book
+  // ("Communication Svcs" x3 and "Commodities" x1) were invisible in the allocation
+  // donut, absent from the heatmap, and rendered with an undefined tag colour.
+  // Deriving the list from the data makes that failure mode structurally impossible:
+  // a sector can now be unrecognised, but it can never be unaccounted for.
+  // NOTE: holdings.sector is written FROM meta.moat_map by the moat-sync path, so
+  // renaming rows alone would drift back. This fix deliberately requires no data write.
+  const sectorsAll=useMemo(()=>{
+    const extra=[...new Set(holdings.filter(h=>Number(h.shares)>0).map(h=>h.sector))]
+      .filter(s=>s&&!SECTORS.includes(s)).sort();
+    return [...SECTORS,...extra];
+  },[holdings,refreshKey]);
+  const secCol=useCallback(sec=>{
+    const i=sectorsAll.indexOf(sec);
+    return i>=0?SCOL[i%SCOL.length]:"#94A3B8";
+  },[sectorsAll]);
+
   const sectorData=useMemo(()=>{
     const subset=mktFilter==="ALL"?holdings:holdings.filter(h=>h.mkt===mktFilter);
-    return SECTORS.map((sec,i)=>({label:sec,color:SCOL[i],value:subset.filter(h=>h.sector===sec).reduce((t,h)=>t+toSGDlive(h.price*h.shares,h.mkt),0)})).filter(d=>d.value>0);
-  },[mktFilter,holdings,refreshKey]);
+    return sectorsAll.map(sec=>({label:sec,color:secCol(sec),value:subset.filter(h=>h.sector===sec).reduce((t,h)=>t+toSGDlive(h.price*h.shares,h.mkt),0)})).filter(d=>d.value>0);
+  },[mktFilter,holdings,refreshKey,sectorsAll,secCol]);
   const countryData=useMemo(()=>{
     const subset=mktFilter==="ALL"?holdings:holdings.filter(h=>h.mkt===mktFilter);
     return [...new Set(subset.map(h=>h.mkt))].map((m,i)=>({label:m,color:[C.accent,C.green,C.gold,C.purple,C.red,"#FF8C42","#62D2E8"][i%7],value:subset.filter(h=>h.mkt===m).reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0)}));
@@ -4038,7 +4059,8 @@ function App(){
           const sgdVal=toSGDlive(localVal,h.mkt),sgdGain=toSGDlive(localGain,h.mkt);
           const hScored={...h,intrinsic:effIV};
           const w=wt(h),pos=gainPct>=0,sc=scoreH(hScored),r=getRec(hScored);
-          const sCol=SCOL[SECTORS.indexOf(h.sector)%SCOL.length];
+          // secCol() replaces a fixed-list lookup that returned undefined on an unlisted sector
+          const sCol=secCol(h.sector);
           return(
             <div key={h.id} style={{...card,cursor:"pointer",
               opacity:isSold?0.65:1,
@@ -5191,10 +5213,12 @@ function App(){
             const mktHoldings=holdings.filter(h=>h.mkt===mkt&&Number(h.shares)>0);
             const mktTotal=mktHoldings.reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0);
             if(mktTotal===0)return null;
-            const sectorsInMkt=SECTORS.map((sec,i)=>{
+            // Derived list: bars now sum to mktTotal instead of silently falling short
+            // by whatever sectors were missing from the fixed list.
+            const sectorsInMkt=sectorsAll.map(sec=>{
               const secHoldings=mktHoldings.filter(h=>h.sector===sec);
               const val=secHoldings.reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0);
-              return{sec,val,col:SCOL[i],cnt:secHoldings.length};
+              return{sec,val,col:secCol(sec),cnt:secHoldings.length};
             }).filter(d=>d.val>0).sort((a,b)=>b.val-a.val);
             return(
               <div key={mkt} style={{marginBottom:16}}>
@@ -8938,7 +8962,7 @@ function App(){
           <div>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:28-15:20</span></div>
+                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:28-16:05</span></div>
                 <button title="Sign out" onClick={()=>{if(window.portfolioDB?.signOut)window.portfolioDB.signOut();else{localStorage.removeItem('ign_jwt');localStorage.removeItem('ign_refresh');location.reload();}}} style={{fontSize:11,color:C.muted,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",borderRadius:4,lineHeight:1}} onMouseEnter={e=>e.target.style.color="#FF5577"} onMouseLeave={e=>e.target.style.color=C.muted}>⏏</button>
               </div>
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
