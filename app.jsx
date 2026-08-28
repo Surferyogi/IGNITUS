@@ -56,7 +56,11 @@ function detectMktFromTicker(ticker){
      t.endsWith('.MI')||t.endsWith('.F')||t.endsWith('.BR'))
                          return 'EU';  // European exchanges
   // No suffix — return null so DB mkt value is NOT overridden.
-  // e.g. ESLOF is EU (OTC ticker, no dot suffix) — DB is authoritative.
+  // Applies to suffix-less (US) tickers — DB is authoritative.
+  // NOTE 2026-08-28: EssilorLuxottica corrected ESLOF -> EL.PA. DBS holds the
+  // Paris line (DBS security code 'EL FP', EUR). The old US-OTC ticker quoted
+  // USD against a EUR cost basis, and yahooTicker() turned it into the invalid
+  // 'ESLOF.PA'. It now resolves to EU via the .PA suffix. Do NOT revert.
   if(!t.includes('.'))   return null;
   return null; // unknown suffix — don't override
 }
@@ -881,7 +885,7 @@ function App(){
           const correctMkt=detectMktFromTicker(h.ticker);
           // Option B: DB mkt is authoritative. Only override when detectMkt returns a
           // definitive suffix-based result (non-null) AND it disagrees with DB.
-          // When detectMkt returns null (no suffix, e.g. ESLOF), preserve DB value.
+          // When detectMkt returns null (no suffix, i.e. US tickers), preserve DB value.
           if(!correctMkt||h.mkt===correctMkt) return h;
           const correctCcy=mktToCcy(correctMkt)||h.ccy||'USD';
           console.warn('[mkt-fix] '+h.ticker+': mkt='+h.mkt+'→'+correctMkt+' ccy→'+correctCcy);
@@ -1915,7 +1919,7 @@ function App(){
   // Results cached in meta.nonUS_iv_cache for instant restore next session.
   const NON_US_IV_TICKERS=new Set([
     '0388.HK','0700.HK','1347.HK','1772.HK','2318.HK','3690.HK','3988.HK',
-    '9618.HK','9988.HK','8001.T','8031.T','D05.SI','O39.SI','U11.SI','ESLOF'
+    '9618.HK','9988.HK','8001.T','8031.T','D05.SI','O39.SI','U11.SI','EL.PA'
   ]);
   async function refreshNonUSIntrinsicWithWebSearch(){
     if(nonUSIVRefreshing||intrinsicRefreshing) return;
@@ -1942,7 +1946,7 @@ function App(){
         +'Use web search to find data from Investing.com, TipRanks, Bloomberg, or broker research. '
         +'Return ONLY a JSON array — no markdown, no preamble:\n'
         +'[{"ticker":"...","intrinsic":123.45,"n_analysts":17,"source":"e.g. Investing.com"}]\n\n'
-        +'Stocks (local currency — HKD for .HK, JPY for .T, SGD for .SI, USD for ESLOF):\n'
+        +'Stocks (local currency — HKD for .HK, JPY for .T, SGD for .SI, EUR for .PA):\n'
         +batch.map(h=>`${h.ticker} — ${h.name} (${h.mkt}), current price ${h.price}`).join('\n');
       try{
         const res=await fetch('https://api.anthropic.com/v1/messages',{
@@ -2012,7 +2016,7 @@ function App(){
       +'Use web search. Return ONLY JSON — no markdown:\n'
       +'[{"ticker":"...","intrinsic":123.45,"n_analysts":17,"source":"e.g. Investing.com"}]\n\n'
       +`${ticker} — ${h.name} (${h.mkt}), current price ${h.price}\n`
-      +'Local currency: HKD for .HK, JPY for .T, SGD for .SI, EUR for EU/ESLOF, USD for US stocks.';
+      +'Local currency: HKD for .HK, JPY for .T, SGD for .SI, EUR for EU (.PA), USD for US stocks.';
     try{
       const res=await fetch('https://api.anthropic.com/v1/messages',{
         method:'POST',headers:{'Content-Type':'application/json'},
@@ -5521,7 +5525,7 @@ function App(){
                 const t=e.target.value.toUpperCase().trim();
                 const autoMkt=detectMktFromTicker(t);
                 // Fall back to existing holding mkt when autoMkt is null (no suffix).
-                // Ensures ESLOF keeps EU, not US, when entered as a trade.
+                // Guards suffix-less tickers whose DB mkt is not US.
                 const existingHolding=holdings.find(h=>h.ticker===t);
                 const resolvedMkt=autoMkt||(existingHolding?.mkt)||null;
                 const autoCcy=resolvedMkt?mktToCcy(resolvedMkt):null;
@@ -8917,7 +8921,7 @@ function App(){
           <div>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:20-08:18</span></div>
+                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:28-07:52</span></div>
                 <button title="Sign out" onClick={()=>{if(window.portfolioDB?.signOut)window.portfolioDB.signOut();else{localStorage.removeItem('ign_jwt');localStorage.removeItem('ign_refresh');location.reload();}}} style={{fontSize:11,color:C.muted,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",borderRadius:4,lineHeight:1}} onMouseEnter={e=>e.target.style.color="#FF5577"} onMouseLeave={e=>e.target.style.color=C.muted}>⏏</button>
               </div>
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
