@@ -726,6 +726,7 @@ function App(){
   const [chartPeriod,setChartPeriod]=useState("6m");
   const [detailPeriod,setDetailPeriod]=useState("6m");
   const [groupBy,setGroupBy]=useState("sector");
+  const [sectorFilter,setSectorFilter]=useState(null); // tap a sector in Allocation to filter the list
   const searchInputRef=React.useRef(null);
 
   // ── Refs/state lifted from render functions — hooks must be at component level ──
@@ -2999,7 +3000,9 @@ function App(){
 
   const sectorData=useMemo(()=>{
     const subset=mktFilter==="ALL"?holdings:holdings.filter(h=>h.mkt===mktFilter);
-    return sectorsAll.map(sec=>({label:sec,color:secCol(sec),value:subset.filter(h=>h.sector===sec).reduce((t,h)=>t+toSGDlive(h.price*h.shares,h.mkt),0)})).filter(d=>d.value>0);
+    return sectorsAll.map(sec=>({label:sec,color:secCol(sec),value:subset.filter(h=>h.sector===sec).reduce((t,h)=>t+toSGDlive(h.price*h.shares,h.mkt),0)}))
+      .filter(d=>d.value>0)
+      .sort((a,b)=>b.value-a.value); // largest first: legend order was the literal SECTORS order
   },[mktFilter,holdings,refreshKey,sectorsAll,secCol]);
   const countryData=useMemo(()=>{
     const subset=mktFilter==="ALL"?holdings:holdings.filter(h=>h.mkt===mktFilter);
@@ -3014,6 +3017,9 @@ function App(){
     // Active holdings only — exclude fully sold (shares=0) from ALL analysis/insights
     let h=(mktFilter==="ALL"?holdings:holdings.filter(x=>x.mkt===mktFilter))
       .filter(x=>!x.fullySold&&x.shares>0);
+    // Sector drill-down from the Allocation legend. Applied here so the holdings list,
+    // the "N Holdings" count and the sort controls all stay consistent automatically.
+    if(sectorFilter) h=h.filter(x=>x.sector===sectorFilter);
     if(searchRef.current){
       const q=searchRef.current.trim().toUpperCase();
       h=h.filter(x=>x.ticker.toUpperCase().includes(q)||x.name.toUpperCase().includes(q));
@@ -3031,7 +3037,7 @@ function App(){
       });
     }
     return h;
-  },[mktFilter,searchVersion,holdings,refreshKey]);
+  },[mktFilter,searchVersion,holdings,refreshKey,sectorFilter]);
 
   // Active holdings for insights/analysis (no market filter, no search — full universe)
   const activeHoldings=useMemo(()=>
@@ -3961,12 +3967,23 @@ function App(){
                 <button style={pill(groupBy==="sector")} onClick={()=>setGroupBy("sector")}>Sector</button>
                 <button style={pill(groupBy==="country")} onClick={()=>setGroupBy("country")}>Country</button>
               </div>
-              {(groupBy==="sector"?sectorData:countryData).slice(0,8).map(d=>(
-                <div key={d.label} style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
-                  <div style={{display:"flex",alignItems:"center",gap:5}}><div style={{width:6,height:6,borderRadius:3,background:d.color}}/><span style={{fontSize:13,color:C.mutedLight}}>{d.label}</span></div>
-                  <span style={{fontSize:13,fontWeight:700}}>{filteredTotalSGD>0?((d.value/filteredTotalSGD)*100).toFixed(1):0}%</span>
-                </div>
-              ))}
+              {/* The 8-entry display cap was removed: with derived sectors the list can
+                  exceed eight, and the 9th was silently hidden (Communication Svcs,
+                  10.8% of the book). Rows are now tappable to drill into a sector. */}
+              {(groupBy==="sector"?sectorData:countryData).map(d=>{
+                const isSec=groupBy==="sector";
+                const active=isSec&&sectorFilter===d.label;
+                return(
+                <div key={d.label}
+                  onClick={isSec?()=>setSectorFilter(active?null:d.label):undefined}
+                  title={isSec?(active?"Show all sectors":"Show only "+d.label):undefined}
+                  style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3,
+                    cursor:isSec?"pointer":"default",borderRadius:4,padding:"1px 4px",
+                    background:active?C.accent+"22":"transparent"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:5}}><div style={{width:6,height:6,borderRadius:3,background:d.color}}/><span style={{fontSize:13,color:active?C.accent:C.mutedLight,fontWeight:active?700:400}}>{d.label}</span></div>
+                  <span style={{fontSize:13,fontWeight:700,color:active?C.accent:undefined}}>{filteredTotalSGD>0?((d.value/filteredTotalSGD)*100).toFixed(1):0}%</span>
+                </div>);
+              })}
             </div>
           </div>
         </div>
@@ -4034,7 +4051,16 @@ function App(){
             </div>
           ):null;
         })()}
-        <div style={{fontSize:14,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10}}>{filtered.length} Holdings{mktFilter!=="ALL"?` · ${mktFilter!=="CN"?mktFilter:"HK"}`:""}</div>
+        <div style={{fontSize:14,fontWeight:700,color:C.muted,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:10,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+          <span>{filtered.length} Holdings{mktFilter!=="ALL"?` · ${mktFilter!=="CN"?mktFilter:"HK"}`:""}</span>
+          {sectorFilter&&(
+            <span onClick={()=>setSectorFilter(null)} title="Clear sector filter"
+              style={{cursor:"pointer",textTransform:"none",letterSpacing:"normal",fontSize:12,fontWeight:700,
+                color:C.accent,background:C.accent+"18",border:"1px solid "+C.accent,borderRadius:999,padding:"2px 9px"}}>
+              {sectorFilter} ✕
+            </span>
+          )}
+        </div>
         {(()=>{
           let src2=holdingSort==="div"
             ?filtered.filter(h=>(h.divYield||0)>0)  // hide zero-dividend stocks
@@ -8962,7 +8988,7 @@ function App(){
           <div>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:28-16:05</span></div>
+                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:28-17:40</span></div>
                 <button title="Sign out" onClick={()=>{if(window.portfolioDB?.signOut)window.portfolioDB.signOut();else{localStorage.removeItem('ign_jwt');localStorage.removeItem('ign_refresh');location.reload();}}} style={{fontSize:11,color:C.muted,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",borderRadius:4,lineHeight:1}} onMouseEnter={e=>e.target.style.color="#FF5577"} onMouseLeave={e=>e.target.style.color=C.muted}>⏏</button>
               </div>
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
