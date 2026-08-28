@@ -38,9 +38,11 @@ const fmtPct=n=>n==null?"--":(n>=0?"+":"")+fmt(n)+"%";
 const toSGD=(v,mkt)=>v*(MKT[mkt]?.r??1.36);
 const fmtL=(n,mkt,d=2)=>n==null?"--":(MKT[mkt]?.symbol??"$")+fmt(Math.abs(n),d);
 const fmtS=(n,d=2)=>n==null?"--":"S$"+fmt(Math.abs(n),d);
-const SECTORS=["Technology","Healthcare","Financials","Consumer Disc.","Industrials","Energy","Utilities","Materials","Real Estate","Comm. Services","Consumer Staples"];
+const SECTORS=["Technology","Healthcare","Financials","Consumer Disc.","Industrials","Energy","Utilities","Materials","Real Estate","Comm. Services","Consumer Staples","Unknown"];
 const MS_STYLES=["Large Growth","Large Blend","Large Value","Mid Growth","Mid Blend","Mid Value","Small Growth","Small Blend","Small Value"];
-const SCOL=[C.accent,C.green,C.gold,C.purple,"#FF8C42","#FF4D6A","#62D2E8","#C084FC","#FDE68A","#A3E635","#FB923C"];
+// SCOL is INDEX-ALIGNED to SECTORS - L2979 and L5180 use SCOL[i] with no modulo.
+// Adding a sector REQUIRES adding a colour here or the slice renders undefined.
+const SCOL=[C.accent,C.green,C.gold,C.purple,"#FF8C42","#FF4D6A","#62D2E8","#C084FC","#FDE68A","#A3E635","#FB923C","#94A3B8"];
 
 // Infer correct market code from ticker symbol suffix
 // Used to validate and auto-correct wrong mkt assignments
@@ -3143,11 +3145,24 @@ function App(){
         if(isFullySold||buys.length===0) return;
         rebuilt.push({
           id:Date.now()+Math.floor(Math.random()*9007),ticker,name:ticker,mkt:detectMktFromTicker(ticker)||buys[0]?.mkt||"US",
-          sector:"Technology",msStyle:"Large Blend",
+          // v2026:08:28 AUDIT FIX: sector and msStyle were hardcoded literals here.
+          // They were invented values that render as if measured, and NOTHING in the
+          // fundamentals-refresh path ever overwrites sector/moat - so a fabrication
+          // written once became permanent (root cause of LIN sitting in Technology).
+          // "Unknown" is in SECTORS/SCOL so the row stays VISIBLE in the allocation
+          // donut instead of being silently dropped by the SECTORS.map() filter.
+          sector:"Unknown",msStyle:"",
           shares:isFullySold?0:netShares,
           avgCost:avgCostFinal,
-          price:computedAvgCost,intrinsic:computedAvgCost*1.1,
-          moat:"Narrow",divYield:0,senateBuys:0,senateSells:0,peRatio:20,revenueGrowth:0,
+          // price seeded to cost is a necessary placeholder (value maths needs a number);
+          // it resolves on the next price refresh. intrinsic was seeded to cost x1.1 -
+          // an invented 10% upside shown on screen for the whole session. Now null,
+          // matching every other holding (IV is session-only and never persisted).
+          price:computedAvgCost,intrinsic:null,
+          // moat was a hardcoded literal - a claim about a business we know nothing
+          // about, and it scored 6/9 and 15/30 points. null falls to the lowest
+          // branch (conservative). peRatio was a literal; 0 is the existing convention.
+          moat:null,divYield:0,senateBuys:0,senateSells:0,peRatio:0,revenueGrowth:0,
           fullySold:isFullySold,
         });
       }
@@ -3529,7 +3544,9 @@ function App(){
 
   function openEditHolding(h){
     setHoldingForm({
-      ticker:h.ticker,name:h.name||"",mkt:h.mkt,sector:h.sector||"Technology",
+      // v2026:08:28 AUDIT FIX: default was a hardcoded sector - opening and saving the
+      // edit dialog on a sector-less holding silently wrote a fabricated sector.
+      ticker:h.ticker,name:h.name||"Unknown",mkt:h.mkt,sector:h.sector||"Unknown",
       shares:String(h.shares),avgCost:String(h.avgCost),price:String(h.price),
       intrinsic:String(h.intrinsic||""),divYield:String(h.divYield||0),
       peRatio:String(h.peRatio||0),moat:h.moat||"Narrow",msStyle:h.msStyle||"Large Blend",
@@ -8921,7 +8938,7 @@ function App(){
           <div>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:28-07:52</span></div>
+                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:28-15:20</span></div>
                 <button title="Sign out" onClick={()=>{if(window.portfolioDB?.signOut)window.portfolioDB.signOut();else{localStorage.removeItem('ign_jwt');localStorage.removeItem('ign_refresh');location.reload();}}} style={{fontSize:11,color:C.muted,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",borderRadius:4,lineHeight:1}} onMouseEnter={e=>e.target.style.color="#FF5577"} onMouseLeave={e=>e.target.style.color=C.muted}>⏏</button>
               </div>
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
