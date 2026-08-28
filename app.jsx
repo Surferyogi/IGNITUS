@@ -3984,6 +3984,27 @@ function App(){
                   <span style={{fontSize:13,fontWeight:700,color:active?C.accent:undefined}}>{filteredTotalSGD>0?((d.value/filteredTotalSGD)*100).toFixed(1):0}%</span>
                 </div>);
               })}
+              {/* Total row. This is a SELF-CHECK, not decoration: the legend sums the
+                  buckets it actually renders, against filteredTotalSGD which sums every
+                  holding. If any bucket is ever dropped again, this reads under 100%
+                  and turns red instead of failing silently -- the exact defect that hid
+                  Communication Svcs (10.8%) and left the legend showing 89.2%. */}
+              {(()=>{
+                const rows=groupBy==="sector"?sectorData:countryData;
+                const sum=rows.reduce((s,d)=>s+d.value,0);
+                const pct=filteredTotalSGD>0?(sum/filteredTotalSGD)*100:0;
+                const off=filteredTotalSGD>0&&Math.abs(pct-100)>0.15;
+                return(
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                    marginTop:6,paddingTop:5,borderTop:"1px solid "+C.border}}
+                    title={off?"Legend does not sum to 100% — some holdings are not being shown":"All holdings accounted for"}>
+                    <span style={{fontSize:13,fontWeight:700,color:off?C.red:C.mutedLight}}>{off?"Total ⚠":"Total"}</span>
+                    <span style={{fontSize:13,fontWeight:800,color:off?C.red:C.text}}>
+                      {showValue?fmtS(sum,0)+" · ":""}{pct.toFixed(1)}%
+                    </span>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -8988,7 +9009,7 @@ function App(){
           <div>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:28-17:40</span></div>
+                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:28-18:15</span></div>
                 <button title="Sign out" onClick={()=>{if(window.portfolioDB?.signOut)window.portfolioDB.signOut();else{localStorage.removeItem('ign_jwt');localStorage.removeItem('ign_refresh');location.reload();}}} style={{fontSize:11,color:C.muted,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",borderRadius:4,lineHeight:1}} onMouseEnter={e=>e.target.style.color="#FF5577"} onMouseLeave={e=>e.target.style.color=C.muted}>⏏</button>
               </div>
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
