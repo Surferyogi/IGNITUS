@@ -29,9 +29,38 @@ const MKT={
   AU:{symbol:"A$", code:"AUD",r:0.81,  index:"ASX 200",   idxVal:7834.1,  idxYtd:3.7,  idxChange:-0.12},
   SG:{symbol:"S$", code:"SGD",r:1.0,   index:"STI",       idxVal:3892.4,  idxYtd:6.2,  idxChange:0.41},
 };
-const DIV_TAX={US:0.30, JP:0.20315, EU:0.15, SG:0, CN:0, GB:0};
-const getDivTax=(mkt)=>DIV_TAX[mkt]||0;
-const fmtTax=(mkt)=>{const t=getDivTax(mkt);return t>0?`${(t*100).toFixed(3).replace(/\.?0+$/,'')}% WHT`:null;};
+// ── Dividend withholding tax (v2026:08:31-14:40) ─────────────────────────
+// Every rate below is VERIFIED against DBS statement receipts: declared gross per
+// share x shares held on the ex-date, vs cash actually credited.
+//   US 30.0%   JNJ 9.38/13.40 and 9.10/13.00; PBDC 299.34/427.80 -> 0.700 exact
+//   JP 15.315% ITOCHU 25406/1500 vs 20.00 -> 0.84687; 27946/1500 vs 22.00 -> 0.84685
+//              20.315% was the JAPANESE-RESIDENT rate - it includes the 5% local
+//              inhabitant tax a non-resident does not pay. Do not restore it.
+//   EU 25.0%   EL.PA 50sh x EUR3.95 -> 148.13; 85sh x EUR4.00 -> 255.00 -> 0.750 exact
+//              France domestic non-resident rate. The 15% FR-SG treaty rate needs a
+//              filing that is not being made, so 25% is what is actually suffered.
+//   SG 0%      REIT net = gross
+//   CN 0%      MARKET DEFAULT ONLY - correct for Cayman/HK-incorporated issuers
+//              (Tencent, Alibaba, HKEX, UNQ 2177 - all Cayman/HK, verified 0%).
+// PRC-INCORPORATED H-shares suffer 10% regardless of the HK listing, so the rate is
+// a property of the SECURITY, not the market. Verified: Ping An 793.07/500 vs
+// 1.76266 -> 0.8998 and 468.08/500 vs 1.04048 -> 0.8997; BOC 429.93/4000 vs
+// 0.120571 -> 0.8915 (10% + DBS handling fee). Source: issuer dividend circulars -
+// individual non-resident holders registered outside the PRC are withheld at 10%.
+const DIV_TAX={US:0.30, JP:0.15315, EU:0.25, SG:0, CN:0, GB:0};
+// Per-security override, keyed on ticker. Add a name here ONLY after confirming
+// place of incorporation from an HKEX filing - never infer from the ticker pattern
+// (0700.HK and 3988.HK are indistinguishable by shape).
+const DIV_TAX_TICKER={
+  '3988.HK':0.10, // Bank of China - PRC-incorporated H-share (verified from receipt)
+  '2318.HK':0.10, // Ping An - PRC-incorporated H-share (verified from receipt)
+  '3750.HK':0.10, // CATL - PRC-incorporated H-share (statutory; no dividend yet)
+};
+const getDivTax=(mkt,ticker)=>{
+  if(ticker){const o=DIV_TAX_TICKER[String(ticker).toUpperCase().trim()];if(o!=null)return o;}
+  return DIV_TAX[mkt]||0;
+};
+const fmtTax=(mkt,ticker)=>{const t=getDivTax(mkt,ticker);return t>0?`${(t*100).toFixed(3).replace(/\.?0+$/,'')}% WHT`:null;};
 
 const fmt=(n,d=2)=>n==null?"--":n.toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
 const fmtPct=n=>n==null?"--":(n>=0?"+":"")+fmt(n)+"%";
@@ -863,7 +892,7 @@ function App(){
               if(t.divMode==="net"){
                 profit=parseFloat(parseFloat(t.price).toFixed(2));
               } else {
-                const taxRate=getDivTax(t.mkt||'US');
+                const taxRate=getDivTax(t.mkt||'US',t.ticker);
                 profit=parseFloat((t.price*t.shares*(1-taxRate)).toFixed(2));
               }
             }
@@ -2972,7 +3001,7 @@ function App(){
     hdrHoldings.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares,h.mkt),0),
   [hdrHoldings,refreshKey]);
   const hdrNetDivSGD=useMemo(()=>
-    hdrHoldings.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares*(1-getDivTax(h.mkt)),h.mkt),0),
+    hdrHoldings.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares*(1-getDivTax(h.mkt,h.ticker)),h.mkt),0),
   [hdrHoldings,refreshKey]);
 
   const wt=h=>filteredTotalSGD?(toSGDlive(h.price*h.shares,h.mkt)/filteredTotalSGD)*100:0;
@@ -3225,14 +3254,14 @@ function App(){
     //      No effect on share count or avg cost.
     // SELL: capital gain = (sellPrice − avgCost) × shares
     // BUY/SCRIP: no profit field
-    function calcDivProfit(divPerShare, qty, mktCode, divMode){
+    function calcDivProfit(divPerShare, qty, mktCode, divMode, tkr){
       // divMode "gross": profit = divPerShare × qty × (1 − WHT)  [default]
       // divMode "net":   divPerShare IS the net total from the statement;
       //                  qty and WHT are ignored — profit = divPerShare directly
       if(divMode==="net"){
         return parseFloat(parseFloat(divPerShare).toFixed(2));
       }
-      const taxRate=getDivTax(mktCode||'US');
+      const taxRate=getDivTax(mktCode||'US',tkr);
       return parseFloat((divPerShare*qty*(1-taxRate)).toFixed(2));
     }
 
@@ -3240,7 +3269,7 @@ function App(){
     if(editTradeId!=null){
       let editProfit=undefined;
       if(type==="DIV"){
-        editProfit=calcDivProfit(p,s,mkt,tradeForm.divMode);
+        editProfit=calcDivProfit(p,s,mkt,tradeForm.divMode,tU);
       } else if(type==="SELL"){
         const buysBefore=trades.filter(t=>t.ticker===tU&&t.type==="BUY"&&t.id!==editTradeId);
         const totalBuyShares=buysBefore.reduce((s,t)=>s+t.shares,0);
@@ -3260,7 +3289,7 @@ function App(){
       const existH=holdings.find(h=>h.ticker===tU);
       let profit=undefined;
       if(type==="DIV"){
-        profit=calcDivProfit(p,s,mkt,tradeForm.divMode);
+        profit=calcDivProfit(p,s,mkt,tradeForm.divMode,tU);
       } else if(type==="SELL"){
         // Use the holding's current avgCost (already reflects all prior buys/sells via WAVG)
         const avgCostNow=existH?.avgCost||0;
@@ -4038,7 +4067,7 @@ function App(){
             .filter(h=>h.divYield>0)
             .sort((a,b)=>(b.divYield||0)-(a.divYield||0));
           const totalDivSGDLocal=divH.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares,h.mkt),0);
-          const totalNetDivSGDLocal=divH.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares*(1-getDivTax(h.mkt)),h.mkt),0);
+          const totalNetDivSGDLocal=divH.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares*(1-getDivTax(h.mkt,h.ticker)),h.mkt),0);
           const totalValSGDLocal=divH.reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0);
           const blendedYield=totalValSGDLocal>0?totalDivSGDLocal/totalValSGDLocal*100:0;
           return divH.length>0?(
@@ -4057,7 +4086,7 @@ function App(){
               <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:5}}>
                 {divH.slice(0,6).map(h=>{
                   const annDiv=toSGDlive((h.divYield/100)*h.price*h.shares,h.mkt);
-                  const taxRate=getDivTax(h.mkt);
+                  const taxRate=getDivTax(h.mkt,h.ticker);
                   const netDiv=annDiv*(1-taxRate);
                   return(
                     <div key={h.ticker} style={{background:C.surface,borderRadius:6,padding:"5px 7px",textAlign:"left"}}>
@@ -4802,7 +4831,7 @@ function App(){
     const active=holdings.filter(h=>Number(h.shares)>0);
     // Forward run-rate (gross/net) from current yields — projection, on market value.
     const fwdGrossSGD=active.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares,h.mkt),0);
-    const fwdNetSGD=active.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares*(1-getDivTax(h.mkt)),h.mkt),0);
+    const fwdNetSGD=active.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares*(1-getDivTax(h.mkt,h.ticker)),h.mkt),0);
     const totValSGD=active.reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0);
     const blended=totValSGD>0?fwdGrossSGD/totValSGD*100:0;
     const payers=active.filter(h=>h.divYield>0).length;
@@ -4811,7 +4840,7 @@ function App(){
     const perMkt=mkts.map(mk=>{
       const hs=active.filter(h=>h.mkt===mk);
       const g=hs.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares,h.mkt),0);
-      const n=hs.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares*(1-getDivTax(h.mkt)),h.mkt),0);
+      const n=hs.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares*(1-getDivTax(h.mkt,h.ticker)),h.mkt),0);
       const v=hs.reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0);
       const cnt=hs.filter(h=>h.divYield>0).length;
       return {mk,g,n,v,yld:v>0?g/v*100:0,cnt};
@@ -4819,7 +4848,7 @@ function App(){
     const mxMkt=perMkt.length?Math.max(...perMkt.map(x=>x.g)):0;
     // Top payers by forward SGD income.
     const top=active.filter(h=>h.divYield>0)
-      .map(h=>({h,inc:toSGDlive((h.divYield/100)*h.price*h.shares,h.mkt),net:toSGDlive((h.divYield/100)*h.price*h.shares*(1-getDivTax(h.mkt)),h.mkt)}))
+      .map(h=>({h,inc:toSGDlive((h.divYield/100)*h.price*h.shares,h.mkt),net:toSGDlive((h.divYield/100)*h.price*h.shares*(1-getDivTax(h.mkt,h.ticker)),h.mkt)}))
       .sort((a,b)=>b.inc-a.inc).slice(0,10);
     const mxTop=top.length?Math.max(...top.map(x=>x.inc)):0;
     // ── Income-by-year history (verbatim logic from prior Div sub-tab) ──
@@ -4836,7 +4865,7 @@ function App(){
     ft.forEach(t=>{
       const y=(t.date||"").slice(0,4);if(!/^\d{4}$/.test(y))return;
       if(!m[y])m[y]={grossLoc:0,netLoc:0,grossSgd:0,netSgd:0};
-      const net=t.profit||0; const wht=getDivTax(t.mkt||'US'); const gross=wht>0?net/(1-wht):net;
+      const net=t.profit||0; const wht=getDivTax(t.mkt||'US',t.ticker); const gross=wht>0?net/(1-wht):net;
       m[y].grossLoc+=gross; m[y].netLoc+=net;
       m[y].grossSgd+=ccyToSGD(gross,t.ccy||t.mkt); m[y].netSgd+=ccyToSGD(net,t.ccy||t.mkt);
     });
@@ -4952,7 +4981,7 @@ function App(){
     const V0=totalValSGD;
     const active=holdings.filter(h=>Number(h.shares)>0);
     const grossDiv=active.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares,h.mkt),0);
-    const netDiv=active.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares*(1-getDivTax(h.mkt)),h.mkt),0);
+    const netDiv=active.reduce((s,h)=>s+toSGDlive((h.divYield/100)*h.price*h.shares*(1-getDivTax(h.mkt,h.ticker)),h.mkt),0);
     const startYield=V0>0?grossDiv/V0*100:0;       // real, current
     const startNetYield=V0>0?netDiv/V0*100:0;
     const monthly=Math.max(0,Number(projContrib)||0);
@@ -5215,10 +5244,14 @@ function App(){
                   const mktDivYield=mktVal>0?mktDiv/mktVal*100:0;
                   const divStocksCount=mktH.filter(h=>h.divYield>0).length;
                   if(mktDivYield<=0)return null;
-                  const taxRate=getDivTax(mkt);
-                  const mktDivNet=mktDiv*(1-taxRate);
+                  // v2026:08:31-14:40: WHT is per-SECURITY, not per-market - CN mixes
+                  // 10% PRC-incorporated H-shares with 0% Cayman/HK issuers. Summing a
+                  // single market rate understated tax on BOC/Ping An/CATL. Sum per
+                  // holding instead, then derive the blended rate for the label.
+                  const mktDivNet=mktH.reduce((s,h)=>s+(h.divYield||0)/100*h.price*h.shares*(1-getDivTax(h.mkt,h.ticker)),0);
                   const mktDivYieldNet=mktVal>0?mktDivNet/mktVal*100:0;
-                  const taxLabel=fmtTax(mkt);
+                  const blendedRate=mktDiv>0?(1-mktDivNet/mktDiv):0;
+                  const taxLabel=blendedRate>0.00005?`${(blendedRate*100).toFixed(3).replace(/\.?0+$/,"")}% WHT`:null;
                   const sgdGross=toSGDlive(mktDiv,mkt);
                   const sgdNet=toSGDlive(mktDivNet,mkt);
                   return(
@@ -5716,8 +5749,8 @@ function App(){
             {tradeForm.type==="DIV"&&tradeForm.price&&tradePriceTotal>0&&(()=>{
               const isNetMode=tradeForm.divMode==="net";
               const sym2=tradePriceSym;
-              const taxRate=getDivTax(tradeForm.mkt||'US');
-              const taxLabel=fmtTax(tradeForm.mkt||'US');
+              const taxRate=getDivTax(tradeForm.mkt||'US',tradeForm.ticker);
+              const taxLabel=fmtTax(tradeForm.mkt||'US',tradeForm.ticker);
 
               if(isNetMode){
                 // Net mode: amount entered IS the net total — show it directly
@@ -5977,7 +6010,7 @@ function App(){
           const linkedHolding=holdings.find(h=>h.ticker===t.ticker);
           const typeCol=t.type==="BUY"?C.green:t.type==="DIV"?C.gold:C.red;
           const isDIV=t.type==="DIV";
-          const taxRate=isDIV?getDivTax(t.mkt||'US'):0;
+          const taxRate=isDIV?getDivTax(t.mkt||'US',t.ticker):0;
           const grossDiv=isDIV?localTotal:0;
           const netDiv=isDIV?(t.profit||grossDiv*(1-taxRate)):0;
           return(
@@ -8037,19 +8070,23 @@ function App(){
                 );
               })()}
             </div>
-            {/* Dividend tax row — only shown for markets with withholding tax */}
+            {/* Dividend gross/net row — v2026:08:31-14:40: shown for EVERY dividend
+                payer, not just taxed markets. Zero-WHT names (SG REITs, Cayman/HK
+                issuers) now state "no withholding tax · net = gross" explicitly, so
+                the card never leaves the reader to assume which case applies. */}
             {(()=>{
-              const taxRate=getDivTax(h.mkt);
-              if(localDiv<=0||taxRate===0) return null;
+              const taxRate=getDivTax(h.mkt,h.ticker);
+              if(localDiv<=0) return null;
               const netDiv=localDiv*(1-taxRate);
               const netDivSGD=toSGDlive(netDiv,h.mkt);
-              const taxLabel=fmtTax(h.mkt);
+              const taxLabel=fmtTax(h.mkt,h.ticker);
+              const zeroWht=taxRate===0;
               return(
-                <div style={{background:C.surface,borderRadius:7,padding:"7px 10px",marginBottom:8,borderLeft:`3px solid ${C.gold}`}}>
-                  <div style={{fontSize:13,color:C.gold,fontWeight:700,marginBottom:4}}>DIVIDEND WITHHOLDING TAX ({taxLabel})</div>
+                <div style={{background:C.surface,borderRadius:7,padding:"7px 10px",marginBottom:8,borderLeft:`3px solid ${zeroWht?C.green:C.gold}`}}>
+                  <div style={{fontSize:13,color:zeroWht?C.green:C.gold,fontWeight:700,marginBottom:4}}>{zeroWht?"DIVIDEND — NO WITHHOLDING TAX":`DIVIDEND WITHHOLDING TAX (${taxLabel})`}</div>
                   <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6,fontSize:14}}>
                     <div><div style={{fontSize:12,color:C.muted}}>Gross/yr</div><div style={{fontWeight:700}}>{fmtL(localDiv,h.mkt,0)}</div><div style={{fontSize:12,color:C.muted}}>{fmtS(sgdDiv)}</div></div>
-                    <div><div style={{fontSize:12,color:C.red}}>Tax ({(taxRate*100).toFixed(3).replace(/\.?0+$/,"")}%)</div><div style={{fontWeight:700,color:C.red}}>-{fmtL(localDiv*taxRate,h.mkt,0)}</div></div>
+                    <div><div style={{fontSize:12,color:zeroWht?C.muted:C.red}}>{zeroWht?"Tax":`Tax (${(taxRate*100).toFixed(3).replace(/\.?0+$/,"")}%)`}</div><div style={{fontWeight:700,color:zeroWht?C.muted:C.red}}>{zeroWht?"None":"-"+fmtL(localDiv*taxRate,h.mkt,0)}</div></div>
                     <div style={{textAlign:"right"}}><div style={{fontSize:12,color:C.green}}>Net/yr</div><div style={{fontWeight:700,color:C.green}}>{fmtL(netDiv,h.mkt,0)}</div><div style={{fontSize:12,color:C.muted}}>{fmtS(netDivSGD)}</div></div>
                   </div>
                 </div>
@@ -9009,7 +9046,7 @@ function App(){
           <div>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:28-18:15</span></div>
+                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:31-14:40</span></div>
                 <button title="Sign out" onClick={()=>{if(window.portfolioDB?.signOut)window.portfolioDB.signOut();else{localStorage.removeItem('ign_jwt');localStorage.removeItem('ign_refresh');location.reload();}}} style={{fontSize:11,color:C.muted,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",borderRadius:4,lineHeight:1}} onMouseEnter={e=>e.target.style.color="#FF5577"} onMouseLeave={e=>e.target.style.color=C.muted}>⏏</button>
               </div>
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
