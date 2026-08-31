@@ -838,7 +838,6 @@ function App(){
   const [nonUSIVRefreshing,setNonUSIVRefreshing]=useState(false);
   const [nonUSIVStatus,setNonUSIVStatus]=useState('');
   const [intrinsicUpdatedAt,setIntrinsicUpdatedAt]=useState(null);
-  const [stmtTotal,setStmtTotal]=useState(null); // Option C: DBS statement anchor total (SGD)
   const [showSoldStocks,setShowSoldStocks]=useState(false); // toggle sold stocks section per marketent
   const [valLoading,setValLoading]=useState({});
 
@@ -1063,12 +1062,6 @@ function App(){
                   setTimeout(()=>refreshAllIntrinsicWithAI(),8000);
                 }
               }
-            }
-            // Option C: load statement anchor total from meta
-            const rs=await fetch(`${SB}/rest/v1/meta?key=eq.stmt_total_sgd`,{headers:HDR});
-            if(rs.ok){
-              const rowsS=await rs.json();
-              if(rowsS.length>0) setStmtTotal(Number(rowsS[0].value));
             }
           }catch(e){}
         })();
@@ -2877,25 +2870,32 @@ function App(){
   const [tickerCheck,setTickerCheck]=useState({status:"idle",message:"",suggestions:[]});
   const [tickerSearchTerm,setTickerSearchTerm]=useState("");
 
-  // Option C: portfolio total = DBS statement anchor (Apr 30 SGD 2,614,339.77)
-  //            + Σ (live_price - stmt_price) × shares × fxRate  per holding
-  // GUARD: only activates when h.stmtPrice is populated on holdings.
-  // Without the guard, stmtPrice==null for every holding causes the null branch to add
-  // the full live value as delta, double-counting stmtTotal into the portfolio total.
-  // Falls back to simple live sum (= banner hdrValSGD) until stmtPrice is implemented.
-  const totalValSGD=useMemo(()=>{
-    const liveSum=holdings.filter(h=>!h.fullySold).reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0);
-    if(!stmtTotal) return liveSum;
-    const hasStmtPrices=holdings.some(h=>h.stmtPrice!=null);
-    if(!hasStmtPrices) return liveSum;
-    const delta=holdings.filter(h=>!h.fullySold).reduce((s,h)=>{
-      const sp=h.stmtPrice!=null?Number(h.stmtPrice):null;
-      // New position added after statement date — count full current value as delta
-      if(sp==null) return s+toSGDlive(h.price*h.shares,h.mkt);
-      return s+toSGDlive((h.price-sp)*h.shares,h.mkt);
-    },0);
-    return stmtTotal+delta;
-  },[holdings,stmtTotal,refreshKey]);
+  // Portfolio total = pure live sum, every holding marked at TODAY's price and
+  // TODAY's FX. Identical by construction to the header banner (hdrValSGD), which
+  // reduces the same `holdings.filter(h=>!h.fullySold)` set the same way.
+  //
+  // v2026:08:31-16:10 — the "Option C" DBS statement anchor was REMOVED (CK decision).
+  // It returned `stmtTotal + Σ (price - stmtPrice) × shares × todayFX` and carried two
+  // independent defects:
+  //   1. FROZEN FX. stmtTotal was a SGD scalar struck at 31-Jul-2026 FX. Only the price
+  //      delta passed through toSGDlive(), so the base was never re-marked and every
+  //      later currency move on it was silently dropped.
+  //   2. WRONG SHARE BASE. (price - sp) × h.shares applied the whole since-statement
+  //      price move to shares bought AFTER the statement date. Measured on EL.PA
+  //      (85 sh at 31-Jul, +50 sh on 16-Aug = 135): anchor -EUR 526.50 vs correct
+  //      -EUR 324.00, an error of -EUR 202.50 = -S$299.17, with no FX involved.
+  // The path was in fact unreachable: h.stmtPrice was never populated, because
+  // portfolioDB.load() in index.html builds holdings from an explicit field whitelist
+  // that omits stmt_price, so the guard at `hasStmtPrices` always short-circuited to
+  // liveSum. The DB side was fully staged though (stmt_price on 79/80 holdings,
+  // meta.stmt_total_sgd = 2,737,158.67), so adding one mapper line would have armed
+  // both defects at once and shifted the headline total by roughly S$9,367.
+  // DO NOT reintroduce the anchor without re-marking the base at live FX AND splitting
+  // the delta at the statement date. `stmtTotal` state and its meta fetch were removed
+  // with it; meta.stmt_total_sgd itself is left untouched in the DB.
+  const totalValSGD=useMemo(()=>
+    holdings.filter(h=>!h.fullySold).reduce((s,h)=>s+toSGDlive(h.price*h.shares,h.mkt),0),
+  [holdings,refreshKey]);
   const totalCostSGD=useMemo(()=>holdings.reduce((s,h)=>s+toSGDlive(h.avgCost*h.shares,h.mkt),0),[holdings,refreshKey]);
   const unrealSGD=totalValSGD-totalCostSGD;
   const unrealPct=totalCostSGD?(unrealSGD/totalCostSGD)*100:0;
@@ -8052,12 +8052,23 @@ function App(){
               {[["Shares",h.shares.toLocaleString(),null],["Avg Cost",fmtL(h.avgCost,h.mkt),fmtS(toSGDlive(h.avgCost,h.mkt))],["Market Value",fmtL(localVal,h.mkt,0),fmtS(sgdVal)],["Cost Basis",fmtL(localCost,h.mkt,0),fmtS(sgdCost)],["Unrealized P&L",`${pos?"+":"-"}${fmtL(Math.abs(localGain),h.mkt,0)}`,`${pos?"+":"-"}${fmtS(Math.abs(sgdGain))}`],].map(([l,v,sub])=>(
                 <div key={l}><div style={{fontSize:13,color:C.muted}}>{l}</div><div style={{fontSize:16,fontWeight:700,color:l==="Unrealized P&L"?(pos?C.green:C.red):C.text}}>{v}</div>{sub&&<div style={{fontSize:13,color:C.muted}}>{sub}</div>}</div>
               ))}
-              {/* Annual Div — custom render to show yield % inline */}
+              {/* Annual Div — v2026:08:31-15:25: the tile now carries the full chain
+                  gross -> WHT% -> net, in both % and cash. Previously it showed gross
+                  only, so the headline yield on the card was the pre-tax number and the
+                  net figure lived further down in a separate block. Rate resolves via
+                  getDivTax(mkt,ticker) so PRC-incorporated H-shares read 10%, not the
+                  CN market default of 0%. */}
               {(()=>{
                 if(localDiv<=0) return(
                   <div><div style={{fontSize:13,color:C.muted}}>Annual Div</div><div style={{fontSize:16,fontWeight:700,color:C.muted}}>—</div></div>
                 );
                 const yieldPct=h.price>0?(h.divYield||0):0;
+                const dTax=getDivTax(h.mkt,h.ticker);
+                const dNet=localDiv*(1-dTax);
+                const dNetSGD=toSGDlive(dNet,h.mkt);
+                const yieldNet=yieldPct*(1-dTax);
+                const noTax=dTax===0;
+                const taxPctTxt=(dTax*100).toFixed(3).replace(/\.?0+$/,"");
                 return(
                   <div>
                     <div style={{fontSize:13,color:C.muted}}>Annual Div (gross)</div>
@@ -8066,6 +8077,19 @@ function App(){
                       {yieldPct>0&&<div style={{fontSize:14,fontWeight:700,color:C.gold,background:C.gold+"18",padding:"1px 5px",borderRadius:4}}>{fmt(yieldPct,2)}%</div>}
                     </div>
                     <div style={{fontSize:13,color:C.muted}}>{fmtS(sgdDiv)}</div>
+                    {/* Withholding tax % + resulting net dividend */}
+                    <div style={{marginTop:5,paddingTop:5,borderTop:`1px dashed ${C.border}`}}>
+                      <div style={{fontSize:12,color:noTax?C.green:C.red,fontWeight:700}}>
+                        {noTax?"No withholding tax":`Withholding tax ${taxPctTxt}%`}
+                        {!noTax&&<span style={{color:C.muted,fontWeight:400}}> · -{fmtL(localDiv*dTax,h.mkt,0)}</span>}
+                      </div>
+                      <div style={{fontSize:13,color:C.muted,marginTop:2}}>Annual Div (net)</div>
+                      <div style={{display:"flex",alignItems:"baseline",gap:5}}>
+                        <div style={{fontSize:16,fontWeight:700,color:C.green}}>{fmtL(dNet,h.mkt,0)}</div>
+                        {yieldNet>0&&<div style={{fontSize:14,fontWeight:700,color:C.green,background:C.green+"18",padding:"1px 5px",borderRadius:4}}>{fmt(yieldNet,2)}%</div>}
+                      </div>
+                      <div style={{fontSize:13,color:C.muted}}>{fmtS(dNetSGD)}</div>
+                    </div>
                   </div>
                 );
               })()}
@@ -9046,7 +9070,7 @@ function App(){
           <div>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:31-14:40</span></div>
+                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:31-16:10</span></div>
                 <button title="Sign out" onClick={()=>{if(window.portfolioDB?.signOut)window.portfolioDB.signOut();else{localStorage.removeItem('ign_jwt');localStorage.removeItem('ign_refresh');location.reload();}}} style={{fontSize:11,color:C.muted,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",borderRadius:4,lineHeight:1}} onMouseEnter={e=>e.target.style.color="#FF5577"} onMouseLeave={e=>e.target.style.color=C.muted}>⏏</button>
               </div>
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
