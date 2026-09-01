@@ -48,19 +48,53 @@ const MKT={
 // 0.120571 -> 0.8915 (10% + DBS handling fee). Source: issuer dividend circulars -
 // individual non-resident holders registered outside the PRC are withheld at 10%.
 const DIV_TAX={US:0.30, JP:0.15315, EU:0.25, SG:0, CN:0, GB:0};
-// Per-security override, keyed on ticker. Add a name here ONLY after confirming
-// place of incorporation from an HKEX filing - never infer from the ticker pattern
-// (0700.HK and 3988.HK are indistinguishable by shape).
+// Per-security rate. Two layers, DB over hardcoded floor:
+//   1. SECURITY_TAX_DB - loaded at startup from the security_tax table. Authoritative.
+//      Carries the rate ACTUALLY SUFFERED at DBS plus provenance (rate_basis).
+//   2. DIV_TAX_TICKER  - hardcoded floor, deliberately retained. If the fetch fails,
+//      the receipt-verified PRC H-shares can never silently revert to the CN market
+//      default of 0%. The DB layer can add or refine, never weaken these.
+// Add to the FLOOR only after confirming place of incorporation from an HKEX filing -
+// never infer from the ticker pattern (0700.HK and 3988.HK are indistinguishable by
+// shape). Everything else belongs in the table, not here.
+// DO-NOT-REGRESS: never re-derive domicile from the ISIN country prefix. That is the
+// country of REGISTRATION. ASML (USN070592100) is taxed 15% by NL and TSM
+// (US8740391003) 21% by TW, yet both carry US prefixes; prefix-derivation would have
+// left both at the 30% US default. Verified from DBS statements 2026-05 and 2026-07.
 const DIV_TAX_TICKER={
   '3988.HK':0.10, // Bank of China - PRC-incorporated H-share (verified from receipt)
   '2318.HK':0.10, // Ping An - PRC-incorporated H-share (verified from receipt)
   '3750.HK':0.10, // CATL - PRC-incorporated H-share (statutory; no dividend yet)
 };
+const SECURITY_TAX_DB={}; // ticker -> {rate:Number|null, basis:String, domicile:String}
+const _stKey=t=>String(t||'').toUpperCase().trim();
 const getDivTax=(mkt,ticker)=>{
-  if(ticker){const o=DIV_TAX_TICKER[String(ticker).toUpperCase().trim()];if(o!=null)return o;}
+  const k=_stKey(ticker);
+  if(k){
+    const row=SECURITY_TAX_DB[k];
+    if(row&&row.rate!=null)return row.rate;
+    const o=DIV_TAX_TICKER[k];if(o!=null)return o;
+  }
   return DIV_TAX[mkt]||0;
 };
-const fmtTax=(mkt,ticker)=>{const t=getDivTax(mkt,ticker);return t>0?`${(t*100).toFixed(3).replace(/\.?0+$/,'')}% WHT`:null;};
+// Provenance of the rate getDivTax just returned:
+//   'receipt_verified' | 'statutory' | 'treaty' | 'INDETERMINATE' | 'market_default'
+// INDETERMINATE means the taxing jurisdiction is known to differ from the market
+// default but the actual rate has NOT been established - e.g. EPD is a US publicly
+// traded partnership withheld under IRC s1446, not a 30% dividend payer. Display
+// suppresses the gross-up rather than printing a number known to be wrong.
+const getDivTaxBasis=(mkt,ticker)=>{
+  const k=_stKey(ticker);
+  if(k){
+    const row=SECURITY_TAX_DB[k];
+    if(row)return row.basis||'statutory';
+    if(DIV_TAX_TICKER[k]!=null)return 'receipt_verified';
+  }
+  return 'market_default';
+};
+const fmtTax=(mkt,ticker)=>{
+  if(getDivTaxBasis(mkt,ticker)==='INDETERMINATE')return 'WHT not determined';
+  const t=getDivTax(mkt,ticker);return t>0?`${(t*100).toFixed(3).replace(/\.?0+$/,'')}% WHT`:null;};
 
 const fmt=(n,d=2)=>n==null?"--":n.toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
 const fmtPct=n=>n==null?"--":(n>=0?"+":"")+fmt(n)+"%";
@@ -963,6 +997,29 @@ function App(){
             setHoldings(prev=>prev.map(h=>(h&&(h.ticker in map))?{...h,dpuYoyPct:map[h.ticker]}:h));
           })
           .catch(e=>console.warn('[reit-dpu] join skipped:',e&&e.message));
+        // ── v2026:09:01-17:40: join curated per-security withholding tax ────
+        // WHT is a property of the SECURITY's taxing jurisdiction, not of the
+        // market it trades in. Non-blocking: on failure SECURITY_TAX_DB stays
+        // empty and getDivTax falls back to the hardcoded floor + market
+        // defaults - i.e. exactly the prior behaviour. Cannot worsen any rate.
+        fetch('https://ckyshjxznltdkxfvhfdy.supabase.co/rest/v1/security_tax?select=ticker,wht_rate,rate_basis,domicile',{headers:sbH()})
+          .then(r=>r.ok?r.json():[])
+          .then(rows=>{
+            let n=0;
+            (rows||[]).forEach(r=>{
+              if(!r||!r.ticker)return;
+              const raw=r.wht_rate;
+              const rate=(raw===null||raw===undefined)?null:Number(raw);
+              if(rate!=null&&!isFinite(rate))return;
+              SECURITY_TAX_DB[String(r.ticker).toUpperCase().trim()]=
+                {rate,basis:r.rate_basis||'statutory',domicile:r.domicile||null};
+              n++;
+            });
+            if(!n)return;
+            console.log('[security-tax] loaded '+n+' per-security WHT rows');
+            setHoldings(prev=>prev.slice()); // re-render: rates feed yield + gross-up
+          })
+          .catch(e=>console.warn('[security-tax] join skipped:',e&&e.message));
         setTrades(tradeMktFixCount>0?tradesMktFixed:tradesWithProfit);
         const fb={};
         // Real trade dates (excludes Opening Balance synthetic date 2000-01-01)
@@ -4865,7 +4922,11 @@ function App(){
     ft.forEach(t=>{
       const y=(t.date||"").slice(0,4);if(!/^\d{4}$/.test(y))return;
       if(!m[y])m[y]={grossLoc:0,netLoc:0,grossSgd:0,netSgd:0};
-      const net=t.profit||0; const wht=getDivTax(t.mkt||'US',t.ticker); const gross=wht>0?net/(1-wht):net;
+      const net=t.profit||0;
+      // INDETERMINATE -> show gross = net rather than divide by a rate known to be
+      // the wrong regime (EPD/GFI/CP are not US 30% dividend payers).
+      const wht=getDivTaxBasis(t.mkt||'US',t.ticker)==='INDETERMINATE'?0:getDivTax(t.mkt||'US',t.ticker);
+      const gross=wht>0?net/(1-wht):net;
       m[y].grossLoc+=gross; m[y].netLoc+=net;
       m[y].grossSgd+=ccyToSGD(gross,t.ccy||t.mkt); m[y].netSgd+=ccyToSGD(net,t.ccy||t.mkt);
     });
@@ -4965,7 +5026,7 @@ function App(){
             );
           })}
           <div style={{fontSize:12,color:C.muted,marginTop:6}}>
-            Net = cash credited per DBS statements · Gross = net ÷ (1−WHT): US 30%, JP 20.315%, EU 15%, SG/HK 0% · SGD at current FX · YoC = year&apos;s net dividends ÷ current cost basis of {selT?"this position":"current "+(divMkt==="ALL"?"portfolio":(divMkt==="CN"?"HK":divMkt)+" holdings")}, both in SGD. The summary above is a forward projection on value; this section is actual cash received.{costSGD==null?" Cost basis unavailable (position exited) — yield not shown.":""}
+            Net = cash credited per DBS statements · Gross = net ÷ (1−WHT): US 30%, JP 15.315%, FR 25%, ACN (IE) 25%, ASML (NL) 15%, TSM (TW) 21%, PRC H-shares 10%, SG/HK 0% · SGD at current FX · YoC = year&apos;s net dividends ÷ current cost basis of {selT?"this position":"current "+(divMkt==="ALL"?"portfolio":(divMkt==="CN"?"HK":divMkt)+" holdings")}, both in SGD. The summary above is a forward projection on value; this section is actual cash received.{costSGD==null?" Cost basis unavailable (position exited) — yield not shown.":""}
           </div>
         </div>
       </>
@@ -9070,7 +9131,7 @@ function App(){
           <div>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:08:31-16:10</span></div>
+                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:09:01-17:40</span></div>
                 <button title="Sign out" onClick={()=>{if(window.portfolioDB?.signOut)window.portfolioDB.signOut();else{localStorage.removeItem('ign_jwt');localStorage.removeItem('ign_refresh');location.reload();}}} style={{fontSize:11,color:C.muted,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",borderRadius:4,lineHeight:1}} onMouseEnter={e=>e.target.style.color="#FF5577"} onMouseLeave={e=>e.target.style.color=C.muted}>⏏</button>
               </div>
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
