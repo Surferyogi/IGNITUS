@@ -8885,7 +8885,8 @@ function App(){
               const perfText=gainPctAI>=0?`currently up ${fmt(gainPctAI,1)}% from your average cost of ${fmtL(h.avgCost,h.mkt)}`:`currently down ${fmt(Math.abs(gainPctAI),1)}% from your average cost of ${fmtL(h.avgCost,h.mkt)}`;
               const peText=h.peRatio>0
                 ?`At a P/E of ${fmt(h.peRatio,1)}x, it is ${h.peRatio<20?"reasonably valued relative to earnings":h.peRatio<35?"moderately priced relative to earnings":"expensively priced relative to current earnings"}.`
-                :"P/E data unavailable — the company may not yet be profitable, or data is pending refresh.";
+                :h.isEtf?"P/E is not applicable — this is a fund, not a single company."
+                :"P/E not available for this holding.";
               // Para 1: when IV exists → standard upside text
               //         when IV missing → rich qualitative fund-manager assessment
               const para1=hasIV?(()=>{
@@ -8897,7 +8898,7 @@ function App(){
                 return `${h.name} has ${moatStr}. ${vStr}`;
               })():(()=>{
                 const pe=h.peRatio||0;const rg=h.revenueGrowth||0;const dy=h.divYield||0;
-                const peQ=pe<=0?"with no P/E data available — the company may not yet be profitable"
+                const peQ=pe<=0?(h.isEtf?"where a single P/E does not apply — it is a fund":"with no P/E figure available")
                   :pe<15?`trading at ${fmt(pe,1)}x earnings — value territory for a quality business`
                   :pe<22?`at ${fmt(pe,1)}x earnings — a reasonable multiple for a business of this quality`
                   :pe<35?`at ${fmt(pe,1)}x earnings, pricing in continued execution — justified if growth persists`
@@ -9131,7 +9132,7 @@ function App(){
           <div>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:09:01-17:40</span></div>
+                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:09:03-23:55</span></div>
                 <button title="Sign out" onClick={()=>{if(window.portfolioDB?.signOut)window.portfolioDB.signOut();else{localStorage.removeItem('ign_jwt');localStorage.removeItem('ign_refresh');location.reload();}}} style={{fontSize:11,color:C.muted,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",borderRadius:4,lineHeight:1}} onMouseEnter={e=>e.target.style.color="#FF5577"} onMouseLeave={e=>e.target.style.color=C.muted}>⏏</button>
               </div>
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
