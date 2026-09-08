@@ -1406,6 +1406,53 @@ function App(){
     setAlertLoading(false);
   }
 
+  /* ── scanRedFlags (v2026:09:08-09:17) ─────────────────────────────────────
+     Populates bizHealth[] for EVERY US non-ETF holding so the Alerts > Red Flags
+     sub-tab can score debt + pricing power across the book, not just the one
+     name whose detail card happens to be open.
+
+     Deliberately reuses the EXISTING business_health action (smart-api v65+) —
+     no new edge action, no edge redeploy, no DB write. Nothing else in the app
+     changes behaviour: this only writes into bizHealth, which the detail card
+     already reads and which is already keyed per ticker.
+
+     PACING: Finnhub free tier is 60 calls/min and business_health makes 2 calls
+     per ticker (metric + financials-reported), so batches of 4 with 1.2s spacing
+     hold ~8 calls/1.2s worst case, inside the cap. The edge fn already has
+     retryOn429 on the metric call.
+
+     Coverage is US non-ETF ONLY — Finnhub's annual series is empty for non-US
+     (verified 2026-07-15 for D05.SI / 9988.HK). Non-US names are surfaced in the
+     UI as an explicit coverage gap, never as a pass.
+  ───────────────────────────────────────────────────────────────────────────── */
+  async function scanRedFlags(){
+    if(rfScanning) return;
+    const targets=activeHoldings.filter(h=>h&&h.mkt==="US"&&!h.isEtf);
+    setRfScanning(true);
+    setRfProgress({done:0,total:targets.length});
+    if(!screenLastRun&&!screenLoading) fetchScreen(); // non-blocking: TTM levels for names with no series
+    for(let i=0;i<targets.length;i+=4){
+      const batch=targets.slice(i,i+4);
+      await Promise.allSettled(batch.map(async h=>{
+        try{
+          const res=await fetch('https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api',{
+            method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({action:'business_health',ticker:h.ticker,mkt:h.mkt,price:h.price}),
+          });
+          const d=await res.json().catch(()=>({available:false,error:'HTTP '+res.status+' - non-JSON response'}));
+          if(!res.ok&&d&&d.available===undefined){d.available=false;d.error=d.error||('HTTP '+res.status);}
+          setBizHealth(prev=>({...prev,[h.ticker]:{loading:false,...d}}));
+        }catch(e){
+          setBizHealth(prev=>({...prev,[h.ticker]:{loading:false,available:false,error:e.message}}));
+        }
+      }));
+      setRfProgress({done:Math.min(i+4,targets.length),total:targets.length});
+      if(i+4<targets.length) await new Promise(r=>setTimeout(r,1200));
+    }
+    setRfLastRun(new Date());
+    setRfScanning(false);
+  }
+
   async function fetchLiveFx(){
     const SB='https://ckyshjxznltdkxfvhfdy.supabase.co';
         const SBH=sbH();
@@ -2304,7 +2351,11 @@ function App(){
   const [screenAILoad,setScreenAILoad]=useState(false);      // array of alert objects
   const [alertLoading,setAlertLoading]=useState(false);
   const [alertLastRun,setAlertLastRun]=useState(null); // Date of last scan
-  const [alertSubTab,setAlertSubTab]=useState("stocks"); // Alert sub-tab: stocks | senate. v2026:06:29-08:46
+  const [alertSubTab,setAlertSubTab]=useState("stocks"); // Alert sub-tab: stocks | redflags | senate. v2026:09:08-09:17
+  // ── Red Flags scan state (v2026:09:08-09:17) ──────────────────────────────
+  const [rfScanning,setRfScanning]=useState(false);
+  const [rfProgress,setRfProgress]=useState({done:0,total:0});
+  const [rfLastRun,setRfLastRun]=useState(null);
 
   const [perfChartData,setPerfChartData]=useState({});
   const [perfChartLoading,setPerfChartLoading]=useState({});
@@ -6814,7 +6865,7 @@ function App(){
         {/* ── Portfolio Red-Flag Review — per-holding screening (moat·drawdown·valuation·yield·concentration). v2026:06:29-07:53 ── */}
         {/* Alert sub-tabs: Stocks Alert / Senate. v2026:06:29-08:46 */}
         <div style={{display:"flex",gap:6,marginBottom:12}}>
-          {[["stocks","📊 Stocks Alert"],["senate","🏛 Senate"]].map(([id,lbl])=>(
+          {[["stocks","📊 Stocks"],["redflags","🚩 Red Flags"],["senate","🏛 Senate"]].map(([id,lbl])=>(
             <button key={id} onClick={()=>setAlertSubTab(id)} style={{flex:1,padding:"9px 10px",borderRadius:9,fontSize:14,fontWeight:alertSubTab===id?800:600,cursor:"pointer",background:alertSubTab===id?C.green+"18":C.surface,color:alertSubTab===id?C.green:C.muted,border:`1px solid ${alertSubTab===id?C.green+"66":C.border}`}}>{lbl}</button>
           ))}
         </div>
@@ -7027,6 +7078,244 @@ function App(){
 
         {/* Senate Signal section — always shown if data exists */}
         </>)}
+
+        {/* ══ RED FLAGS (v2026:09:08-09:17) ═══════════════════════════════════
+            High debt + low pricing power + related deterioration signals.
+
+            Computed ENTIRELY client-side from feeds the app already runs. No new
+            edge action, no DB write, no change to the Stocks/Senate sub-tabs:
+              · bizHealth[t].trends  -> 5y grossMargin / roic / fcfMargin / debtToEquity
+                                        (business_health, smart-api v65+). Series
+                                        values are DECIMALS (0.72 = 72%).
+              · bizHealth[t].dilution3Y -> %/yr, split-adjusted (positive = diluting)
+              · screenData[t]        -> TTM level D/E + grossMargin (Finnhub, US/EU/GB)
+              · h.gearingPct / h.dpuYoyPct -> S-REIT leverage + DPU (reit_metrics join)
+
+            COVERAGE: business_health is US non-ETF only (Finnhub annual series is
+            empty for non-US, verified 2026-07-15 on D05.SI / 9988.HK). Non-US
+            operating companies therefore have NO trend feed and are listed under
+            "Not covered" rather than passing the screen. NULLs are deliberate -
+            a false all-clear is worse than a visible gap.
+        ══════════════════════════════════════════════════════════════════════ */}
+        {alertSubTab==="redflags"&&(()=>{
+          const nz=v=>(typeof v==="number"&&isFinite(v))?v:null;
+          // series -> {first,last,deltaPts,yrs} in PERCENTAGE POINTS (series are decimals)
+          const trendPts=arr=>{
+            if(!Array.isArray(arr)||arr.length<2) return null;
+            const a=nz(arr[0]&&arr[0].v), b=nz(arr[arr.length-1]&&arr[arr.length-1].v);
+            if(a===null||b===null) return null;
+            return {first:a*100,last:b*100,deltaPts:(b-a)*100,yrs:arr.length};
+          };
+          const SEVRANK={high:0,medium:1,low:2};
+          const rowsFor=[]; const noCover=[]; const cleanN=[];
+
+          activeHoldings.forEach(h=>{
+            if(!h||h.isEtf) return;                       // ETFs have no issuer balance sheet
+            const isReit=h.sector==="Real Estate";
+            const f=[];
+
+            if(isReit){
+              const g=nz(h.gearingPct), dpu=nz(h.dpuYoyPct);
+              if(g===null&&dpu===null){noCover.push({h,why:"no reit_metrics row yet"});return;}
+              if(g!==null&&g>=45)      f.push({sev:"high",  code:"REIT_GEARING",txt:`Gearing ${g.toFixed(1)}% — inside the MAS 50% cap but almost no headroom for a valuation markdown`});
+              else if(g!==null&&g>=40) f.push({sev:"medium",code:"REIT_GEARING",txt:`Gearing ${g.toFixed(1)}% — above the 40% comfort line`});
+              if(dpu!==null&&dpu<0)    f.push({sev:dpu<=-5?"high":"medium",code:"REIT_DPU",txt:`DPU ${dpu.toFixed(1)}% YoY — rent reversions are not covering the cost of debt`});
+              else if(dpu!==null&&dpu===0) f.push({sev:"low",code:"REIT_DPU",txt:"DPU flat YoY — no real pricing power on rent"});
+              if(f.length) rowsFor.push({h,f}); else cleanN.push(h);
+              return;
+            }
+
+            const bh=bizHealth[h.ticker]||null;
+            const sd=screenData[h.ticker]||null;
+            const gm  = bh&&bh.available&&bh.trends ? trendPts(bh.trends.grossMargin) : null;
+            const roic= bh&&bh.available&&bh.trends ? trendPts(bh.trends.roic)        : null;
+            const fcf = bh&&bh.available&&bh.trends ? trendPts(bh.trends.fcfMargin)   : null;
+            const deS = bh&&bh.available&&bh.trends&&Array.isArray(bh.trends.debtToEquity)&&bh.trends.debtToEquity.length
+                        ? nz(bh.trends.debtToEquity[bh.trends.debtToEquity.length-1].v) : null;
+            const deL = sd?nz(sd.debtToEquity):null;   // metric.totalDebt2EquityAnnual - RATIO (units proven by the Screen scoring above)
+            const de  = deL!==null ? deL : deS;         // annual series only as fallback; its unit is not independently verified
+            const deSrc = deL!==null ? "TTM" : (deS!==null?"5y series":null);
+            const dil = bh&&bh.available ? nz(bh.dilution3Y) : null;
+
+            const deNeg=de!==null&&de<0;
+            if(de===null&&gm===null){noCover.push({h,why:bh&&bh.error?`business_health: ${bh.error}`:(h.mkt==="US"?"not scanned yet":`no fundamental feed for mkt ${h.mkt}`)});return;}
+
+            const deHigh=de!==null&&de>=2.0, deVHigh=de!==null&&de>=3.0;
+            const gmDrop=gm!==null&&gm.deltaPts<=-1.5, gmBig=gm!==null&&gm.deltaPts<=-4.0;
+            const gmTxt=gm?`gross margin ${gm.first.toFixed(1)}% → ${gm.last.toFixed(1)}% (${gm.deltaPts>0?"+":""}${gm.deltaPts.toFixed(1)}pt over ${gm.yrs}y)`:null;
+
+            // ── headline: the combination CK asked for ──
+            if(deHigh&&gmDrop)
+              f.push({sev:"high",code:"DEBT_PRICING",txt:`D/E ${de.toFixed(2)}× (${deSrc}) and ${gmTxt} — leverage rising into a weakening price position`});
+            else if(deHigh)
+              f.push({sev:deVHigh?"medium":"low",code:"HIGH_DEBT",txt:`D/E ${de.toFixed(2)}×${gmTxt?` but ${gmTxt}`:" (no margin series to cross-check)"} — check whether this is buyback-driven negative equity before treating it as distress`});
+            else if(gmDrop)
+              f.push({sev:gmBig?"high":"medium",code:"PRICING_POWER",txt:`${gmTxt.charAt(0).toUpperCase()+gmTxt.slice(1)} — debt is not the issue, price realisation is`});
+
+            if(deNeg)
+              f.push({sev:"low",code:"NEG_EQUITY",txt:`D/E ${de.toFixed(2)}× — negative shareholders' equity. Usually buyback- or franchise-financed rather than distress; read it alongside FCF, not on its own`});
+            if(roic&&roic.deltaPts<=-3)
+              f.push({sev:"medium",code:"ROIC_DECAY",txt:`ROIC ${roic.first.toFixed(1)}% → ${roic.last.toFixed(1)}% (${roic.deltaPts.toFixed(1)}pt) — returns on invested capital decaying`});
+            if(fcf&&fcf.last<0)
+              f.push({sev:"high",code:"FCF_NEGATIVE",txt:`FCF margin ${fcf.last.toFixed(1)}% — negative free cash flow while carrying debt`});
+            else if(fcf&&fcf.deltaPts<=-3)
+              f.push({sev:"medium",code:"FCF_EROSION",txt:`FCF margin ${fcf.first.toFixed(1)}% → ${fcf.last.toFixed(1)}% (${fcf.deltaPts.toFixed(1)}pt) — cash conversion weakening`});
+            if(dil!==null&&dil>=2)
+              f.push({sev:"medium",code:"DILUTION",txt:`Shares +${dil}%/yr (3Y, split-adjusted) — owners diluted`});
+
+            if(f.length) rowsFor.push({h,f}); else cleanN.push(h);
+          });
+
+          rowsFor.forEach(r=>r.f.sort((a,b)=>(SEVRANK[a.sev]??9)-(SEVRANK[b.sev]??9)));
+          rowsFor.sort((a,b)=>{
+            const d=(SEVRANK[a.f[0].sev]??9)-(SEVRANK[b.f[0].sev]??9);
+            return d!==0?d:(b.f.length-a.f.length)||a.h.ticker.localeCompare(b.h.ticker);
+          });
+          const nHigh=rowsFor.filter(r=>r.f[0].sev==="high").length;
+          const SEV2=(s)=>s==="high"?C.red:s==="medium"?C.gold:C.muted;
+          const CODE_LBL={
+            DEBT_PRICING:"High debt · Low pricing power",
+            HIGH_DEBT:"High leverage",
+            NEG_EQUITY:"Negative equity",
+            PRICING_POWER:"Pricing power eroding",
+            ROIC_DECAY:"ROIC decay",
+            FCF_NEGATIVE:"Negative FCF",
+            FCF_EROSION:"FCF erosion",
+            DILUTION:"Share dilution",
+            REIT_GEARING:"REIT gearing",
+            REIT_DPU:"DPU / rent pricing",
+          };
+
+          return(<>
+            {/* Header + scan control */}
+            <div style={{...card,background:"#1A0D0D",border:`1px solid ${C.red}30`,marginBottom:12}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:15,fontWeight:800,color:C.red,letterSpacing:"0.08em",marginBottom:3}}>🚩 RED FLAGS</div>
+                  <div style={{fontSize:14,color:C.muted,lineHeight:1.5}}>
+                    High debt · Pricing power erosion · ROIC decay · FCF · Dilution · REIT gearing &amp; DPU
+                  </div>
+                  {rfLastRun&&(
+                    <div style={{fontSize:13,color:C.muted,marginTop:4}}>
+                      Last scanned: {rfLastRun.toLocaleTimeString("en-SG",{hour:"2-digit",minute:"2-digit"})}
+                      {" · "}{rowsFor.length} name{rowsFor.length!==1?"s":""} flagged
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={scanRedFlags}
+                  disabled={rfScanning}
+                  style={{padding:"8px 14px",borderRadius:9,border:`1px solid ${rfScanning?C.border:C.red+"66"}`,
+                    background:rfScanning?C.surface:C.red+"18",color:rfScanning?C.muted:C.red,
+                    fontSize:14,fontWeight:700,cursor:rfScanning?"not-allowed":"pointer",flexShrink:0,marginLeft:8}}>
+                  {rfScanning?`↻ ${rfProgress.done}/${rfProgress.total}`:"🔍 Scan Now"}
+                </button>
+              </div>
+              {nHigh>0&&(
+                <div style={{marginTop:8,padding:"6px 10px",background:C.red+"18",borderRadius:6,fontSize:14,color:C.red,fontWeight:700}}>
+                  ⚠ {nHigh} name{nHigh>1?"s":""} at HIGH severity
+                </div>
+              )}
+            </div>
+
+            {/* Empty / first-run state */}
+            {!rfLastRun&&!rfScanning&&rowsFor.length===0&&(
+              <div style={{...card,textAlign:"center",padding:"28px 16px"}}>
+                <div style={{fontSize:34,marginBottom:8}}>🚩</div>
+                <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>No scan run this session</div>
+                <div style={{fontSize:14,color:C.muted,lineHeight:1.5}}>
+                  Tap <b>Scan Now</b> to pull 5-year margin, ROIC, FCF and leverage series for every US holding.
+                  Takes roughly a minute — Finnhub free tier is 60 calls/min and each name costs two calls.
+                </div>
+              </div>
+            )}
+
+            {rfScanning&&(
+              <div style={{...card,textAlign:"center",padding:"20px 16px",marginBottom:10}}>
+                <div style={{fontSize:14,color:C.muted}}>Pulling fundamentals… {rfProgress.done}/{rfProgress.total}</div>
+                <div style={{height:5,background:C.surface,borderRadius:3,marginTop:8,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${rfProgress.total?Math.round(rfProgress.done/rfProgress.total*100):0}%`,background:C.red,transition:"width .3s"}}/>
+                </div>
+              </div>
+            )}
+
+            {/* Flagged names */}
+            {rowsFor.length>0&&(
+              <>
+                <div style={{fontSize:14,fontWeight:700,color:C.muted,letterSpacing:"0.08em",marginBottom:8,textTransform:"uppercase"}}>
+                  {rowsFor.length} Name{rowsFor.length!==1?"s":""} Flagged
+                </div>
+                {rowsFor.map(({h,f})=>{
+                  const top=f[0].sev, col=SEV2(top);
+                  const gainPct=h.avgCost>0?((h.price-h.avgCost)/h.avgCost)*100:null;
+                  return(
+                    <div key={h.ticker} onClick={()=>{setSel(h);setDetailPeriod("6m");}}
+                      style={{...card,borderLeft:`4px solid ${col}`,cursor:"pointer",marginBottom:10}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                        <div>
+                          <div style={{fontSize:15,fontWeight:800,color:col}}>{h.ticker}</div>
+                          <div style={{display:"flex",alignItems:"center",gap:5,marginTop:2,flexWrap:"wrap"}}>
+                            <span style={{fontSize:13,fontWeight:700,padding:"1px 6px",borderRadius:3,background:col+"25",color:col}}>
+                              {top==="high"?"🔴 HIGH":top==="medium"?"🟠 MEDIUM":"⚪ LOW"}
+                            </span>
+                            <Chip mkt={h.mkt}/>
+                            {h.moat&&<span style={{fontSize:13,color:C.muted,fontWeight:700}}>{h.moat} moat</span>}
+                          </div>
+                        </div>
+                        <div style={{textAlign:"right",flexShrink:0}}>
+                          <div style={{fontSize:14,fontWeight:700}}>{fmtL(h.price,h.mkt)}</div>
+                          {gainPct!==null&&(
+                            <div style={{fontSize:13,fontWeight:700,color:gainPct>=0?C.green:C.red}}>
+                              {gainPct>=0?"+":""}{fmt(gainPct,1)}% gain
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{fontSize:13,color:C.muted,marginBottom:6}}>{h.name}</div>
+                      {f.map((x,j)=>(
+                        <div key={j} style={{display:"flex",gap:7,alignItems:"flex-start",background:C.surface,borderRadius:5,padding:"6px 9px",marginTop:5}}>
+                          <span style={{fontSize:12,fontWeight:800,color:SEV2(x.sev),flexShrink:0,minWidth:74}}>{CODE_LBL[x.code]||x.code}</span>
+                          <span style={{fontSize:13,color:C.text,lineHeight:1.45}}>{x.txt}</span>
+                        </div>
+                      ))}
+                      <div style={{fontSize:12,color:C.muted,marginTop:6,textAlign:"right"}}>Tap to open {h.ticker} →</div>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+
+            {/* Passed */}
+            {cleanN.length>0&&(
+              <div style={{...card,marginBottom:10}}>
+                <div style={{fontSize:14,fontWeight:700,color:C.green,marginBottom:6}}>✓ {cleanN.length} passed the screen</div>
+                <div style={{fontSize:13,color:C.muted,lineHeight:1.7}}>{cleanN.map(x=>x.ticker).join(" · ")}</div>
+              </div>
+            )}
+
+            {/* COVERAGE GAP — never treat these as a pass */}
+            {noCover.length>0&&(
+              <div style={{...card,borderLeft:`3px solid ${C.muted}`}}>
+                <div style={{fontSize:14,fontWeight:700,color:C.gold,marginBottom:4}}>⊘ {noCover.length} not covered — NOT a pass</div>
+                <div style={{fontSize:13,color:C.muted,lineHeight:1.5,marginBottom:6}}>
+                  These names were not screened. Finnhub's annual fundamental series is US-only, so
+                  HK / CN / JP / EU operating companies have no margin, ROIC or leverage feed in the app today.
+                </div>
+                {noCover.map(({h,why})=>(
+                  <div key={h.ticker} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"3px 0",borderTop:`1px solid ${C.border}`}}>
+                    <span style={{fontWeight:700}}>{h.ticker}<span style={{color:C.muted,fontWeight:400}}> · {h.mkt}</span></span>
+                    <span style={{color:C.muted}}>{why}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{fontSize:11,color:C.muted,marginTop:10,textAlign:"right",lineHeight:1.6}}>
+              Source: Finnhub annual series via smart-api <code>business_health</code> (5y) + <code>screen</code> (TTM levels) · S-REIT rows from <code>reit_metrics</code>.<br/>
+              Net debt/EBITDA and interest coverage are NOT available client-side — they need an edge-side feed.
+            </div>
+          </>);
+        })()}
 
         {alertSubTab==="senate"&&(<>
         {hasSenate&&(
@@ -9132,7 +9421,7 @@ function App(){
           <div>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:09:03-23:55</span></div>
+                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:09:08-09:17</span></div>
                 <button title="Sign out" onClick={()=>{if(window.portfolioDB?.signOut)window.portfolioDB.signOut();else{localStorage.removeItem('ign_jwt');localStorage.removeItem('ign_refresh');location.reload();}}} style={{fontSize:11,color:C.muted,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",borderRadius:4,lineHeight:1}} onMouseEnter={e=>e.target.style.color="#FF5577"} onMouseLeave={e=>e.target.style.color=C.muted}>⏏</button>
               </div>
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
