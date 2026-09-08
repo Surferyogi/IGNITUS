@@ -1427,10 +1427,33 @@ function App(){
   ───────────────────────────────────────────────────────────────────────────── */
   async function scanRedFlags(){
     if(rfScanning) return;
-    const targets=activeHoldings.filter(h=>h&&h.mkt==="US"&&!h.isEtf);
+    const rfAll=activeHoldings.filter(h=>h&&!h.isEtf);            // ALL markets - red_flags is not US-gated
+    const targets=activeHoldings.filter(h=>h&&h.mkt==="US"&&!h.isEtf); // US-only supplement (ROIC/FCF/dilution)
     setRfScanning(true);
-    setRfProgress({done:0,total:targets.length});
-    if(!screenLastRun&&!screenLoading) fetchScreen(); // non-blocking: TTM levels for names with no series
+    setRfProgress({done:0,total:rfAll.length+targets.length});
+
+    /* PASS 1 - smart-api v86 red_flags. ONE pinned source (Yahoo
+       fundamentals-timeseries, fiscal-year), so net debt/EBITDA, interest
+       coverage and the margin series are internally consistent and cover
+       HK/JP/EU/SG as well as US. Chunked 25 per call per CK 2026-09-08. */
+    let done=0;
+    for(let i=0;i<rfAll.length;i+=25){
+      const chunk=rfAll.slice(i,i+25);
+      try{
+        const res=await fetch('https://ckyshjxznltdkxfvhfdy.supabase.co/functions/v1/smart-api',{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'red_flags',holdings:chunk.map(h=>({ticker:h.ticker,mkt:h.mkt}))}),
+        });
+        const d=await res.json().catch(()=>({}));
+        if(d&&d.redFlags) setRfData(prev=>({...prev,...d.redFlags}));
+        else console.warn('[red_flags] no payload, HTTP',res.status);
+      }catch(e){console.warn('[red_flags] chunk error:',e.message);}
+      done+=chunk.length; setRfProgress({done,total:rfAll.length+targets.length});
+    }
+
+    /* PASS 2 - business_health. NOT a second leverage source: it supplies only
+       ROIC / FCF-margin / dilution, which red_flags does not carry. US non-ETF
+       only (Finnhub annual series). Leverage and margins come from PASS 1. */
     for(let i=0;i<targets.length;i+=4){
       const batch=targets.slice(i,i+4);
       await Promise.allSettled(batch.map(async h=>{
@@ -1446,7 +1469,7 @@ function App(){
           setBizHealth(prev=>({...prev,[h.ticker]:{loading:false,available:false,error:e.message}}));
         }
       }));
-      setRfProgress({done:Math.min(i+4,targets.length),total:targets.length});
+      setRfProgress({done:rfAll.length+Math.min(i+4,targets.length),total:rfAll.length+targets.length});
       if(i+4<targets.length) await new Promise(r=>setTimeout(r,1200));
     }
     setRfLastRun(new Date());
@@ -2356,6 +2379,7 @@ function App(){
   const [rfScanning,setRfScanning]=useState(false);
   const [rfProgress,setRfProgress]=useState({done:0,total:0});
   const [rfLastRun,setRfLastRun]=useState(null);
+  const [rfData,setRfData]=useState({});   // {TICKER:{ndEbitda,ndBasis,intCov,gm,om,gmDeltaPts,gmPeakDropPts,fy,src}} from smart-api red_flags (v86)
 
   const [perfChartData,setPerfChartData]=useState({});
   const [perfChartLoading,setPerfChartLoading]=useState({});
@@ -7125,35 +7149,51 @@ function App(){
               return;
             }
 
+            /* LEVERAGE + MARGINS: smart-api v86 red_flags ONLY - one pinned source
+               (Yahoo fundamentals-timeseries, fiscal-year). Finnhub D/E was retired
+               as a leverage input on 2026-09-08: the two disagreed materially
+               (8031.T 6.44x vs 2.93x, EL.PA 2.29x vs 1.11x) and mixing definitions
+               inside one screen made the ranking depend on which feed answered.
+               bizHealth below now supplies ROIC / FCF / dilution ONLY. */
+            const rf=rfData[h.ticker]||null;
             const bh=bizHealth[h.ticker]||null;
-            const sd=screenData[h.ticker]||null;
-            const gm  = bh&&bh.available&&bh.trends ? trendPts(bh.trends.grossMargin) : null;
-            const roic= bh&&bh.available&&bh.trends ? trendPts(bh.trends.roic)        : null;
-            const fcf = bh&&bh.available&&bh.trends ? trendPts(bh.trends.fcfMargin)   : null;
-            const deS = bh&&bh.available&&bh.trends&&Array.isArray(bh.trends.debtToEquity)&&bh.trends.debtToEquity.length
-                        ? nz(bh.trends.debtToEquity[bh.trends.debtToEquity.length-1].v) : null;
-            const deL = sd?nz(sd.debtToEquity):null;   // metric.totalDebt2EquityAnnual - RATIO (units proven by the Screen scoring above)
-            const de  = deL!==null ? deL : deS;         // annual series only as fallback; its unit is not independently verified
-            const deSrc = deL!==null ? "TTM" : (deS!==null?"5y series":null);
+            const roic= bh&&bh.available&&bh.trends ? trendPts(bh.trends.roic)      : null;
+            const fcf = bh&&bh.available&&bh.trends ? trendPts(bh.trends.fcfMargin) : null;
             const dil = bh&&bh.available ? nz(bh.dilution3Y) : null;
 
-            const deNeg=de!==null&&de<0;
-            if(de===null&&gm===null){noCover.push({h,why:bh&&bh.error?`business_health: ${bh.error}`:(h.mkt==="US"?"not scanned yet":`no fundamental feed for mkt ${h.mkt}`)});return;}
+            const ok=rf&&rf.available;
+            const nde  = ok?nz(rf.ndEbitda):null;
+            const cov  = ok?nz(rf.intCov):null;
+            const gmS  = (ok&&Array.isArray(rf.gm)&&rf.gm.length>=2)?rf.gm:null;
+            const gmDel= ok?nz(rf.gmDeltaPts):null;
+            const gmPk = ok?nz(rf.gmPeakDropPts):null;
+            if(nde===null&&gmS===null){
+              noCover.push({h,why:rf&&rf.error?("red_flags: "+rf.error):(rf?"no fiscal series published for this issuer":"not scanned yet")});
+              return;
+            }
 
-            const deHigh=de!==null&&de>=2.0, deVHigh=de!==null&&de>=3.0;
-            const gmDrop=gm!==null&&gm.deltaPts<=-1.5, gmBig=gm!==null&&gm.deltaPts<=-4.0;
-            const gmTxt=gm?`gross margin ${gm.first.toFixed(1)}% → ${gm.last.toFixed(1)}% (${gm.deltaPts>0?"+":""}${gm.deltaPts.toFixed(1)}pt over ${gm.yrs}y)`:null;
+            const levHigh=nde!==null&&nde>=2.0, levVHigh=nde!==null&&nde>=3.0;
+            /* Fire on EITHER the full-window fall OR the drawdown off the best year.
+               first-vs-last alone misses a cyclical that troughed mid-window then
+               rolled over again - measured 2026-09-08: VST reads +20.6pt first->last
+               but -10.8pt off peak, and would have passed the screen silently. */
+            const gmDrop=(gmDel!==null&&gmDel<=-1.5)||(gmPk!==null&&gmPk<=-4.0);
+            const gmBig =(gmDel!==null&&gmDel<=-4.0)||(gmPk!==null&&gmPk<=-8.0);
+            const gmTxt=gmS?`gross margin ${gmS[0].v.toFixed(1)}% \u2192 ${gmS[gmS.length-1].v.toFixed(1)}% (${gmDel>0?"+":""}${gmDel.toFixed(1)}pt over ${gmS.length}y${(gmPk!==null&&gmPk<-0.05)?`, ${gmPk.toFixed(1)}pt off peak`:""})`:null;
+            const ndTxt=nde!==null?`${rf.ndBasis==="gross"?"Gross":"Net"} debt/EBITDA ${nde.toFixed(2)}\u00D7`:null;
 
-            // ── headline: the combination CK asked for ──
-            if(deHigh&&gmDrop)
-              f.push({sev:"high",code:"DEBT_PRICING",txt:`D/E ${de.toFixed(2)}× (${deSrc}) and ${gmTxt} — leverage rising into a weakening price position`});
-            else if(deHigh)
-              f.push({sev:deVHigh?"medium":"low",code:"HIGH_DEBT",txt:`D/E ${de.toFixed(2)}×${gmTxt?` but ${gmTxt}`:" (no margin series to cross-check)"} — check whether this is buyback-driven negative equity before treating it as distress`});
+            if(levHigh&&gmDrop)
+              f.push({sev:"high",code:"DEBT_PRICING",txt:`${ndTxt} (FY${rf.fy}) and ${gmTxt} \u2014 leverage carried into a weakening price position`});
+            else if(levHigh)
+              f.push({sev:levVHigh?"medium":"low",code:"HIGH_DEBT",txt:`${ndTxt} (FY${rf.fy})${gmTxt?` but ${gmTxt}`:" \u2014 no margin series to cross-check"}`});
             else if(gmDrop)
-              f.push({sev:gmBig?"high":"medium",code:"PRICING_POWER",txt:`${gmTxt.charAt(0).toUpperCase()+gmTxt.slice(1)} — debt is not the issue, price realisation is`});
+              f.push({sev:gmBig?"high":"medium",code:"PRICING_POWER",txt:`${gmTxt.charAt(0).toUpperCase()+gmTxt.slice(1)} \u2014 debt is not the issue, price realisation is`});
 
-            if(deNeg)
-              f.push({sev:"low",code:"NEG_EQUITY",txt:`D/E ${de.toFixed(2)}× — negative shareholders' equity. Usually buyback- or franchise-financed rather than distress; read it alongside FCF, not on its own`});
+            if(cov!==null&&cov<2)
+              f.push({sev:cov<1?"high":"medium",code:"INT_COVER",txt:`Interest coverage ${cov.toFixed(2)}\u00D7 (EBIT/interest, FY${rf.fy})${cov<1?" \u2014 operating profit does not cover the interest bill":""}`});
+            if(ok&&rf.ndBasis==="gross")
+              f.push({sev:"low",code:"GROSS_BASIS",txt:"Yahoo published no net-debt line for this issuer, so the ratio above is GROSS debt/EBITDA. Absence is not read as net cash"});
+
             if(roic&&roic.deltaPts<=-3)
               f.push({sev:"medium",code:"ROIC_DECAY",txt:`ROIC ${roic.first.toFixed(1)}% → ${roic.last.toFixed(1)}% (${roic.deltaPts.toFixed(1)}pt) — returns on invested capital decaying`});
             if(fcf&&fcf.last<0)
@@ -7176,7 +7216,8 @@ function App(){
           const CODE_LBL={
             DEBT_PRICING:"High debt · Low pricing power",
             HIGH_DEBT:"High leverage",
-            NEG_EQUITY:"Negative equity",
+            INT_COVER:"Interest cover",
+            GROSS_BASIS:"Gross-debt basis",
             PRICING_POWER:"Pricing power eroding",
             ROIC_DECAY:"ROIC decay",
             FCF_NEGATIVE:"Negative FCF",
@@ -7298,8 +7339,8 @@ function App(){
               <div style={{...card,borderLeft:`3px solid ${C.muted}`}}>
                 <div style={{fontSize:14,fontWeight:700,color:C.gold,marginBottom:4}}>⊘ {noCover.length} not covered — NOT a pass</div>
                 <div style={{fontSize:13,color:C.muted,lineHeight:1.5,marginBottom:6}}>
-                  These names were not screened. Finnhub's annual fundamental series is US-only, so
-                  HK / CN / JP / EU operating companies have no margin, ROIC or leverage feed in the app today.
+                  These names returned no fiscal series. Common and legitimate: banks and insurers publish no
+                  gross-profit line (verified on D05.SI), and recent spin-offs have too little history.
                 </div>
                 {noCover.map(({h,why})=>(
                   <div key={h.ticker} style={{display:"flex",justifyContent:"space-between",fontSize:13,padding:"3px 0",borderTop:`1px solid ${C.border}`}}>
@@ -7311,8 +7352,8 @@ function App(){
             )}
 
             <div style={{fontSize:11,color:C.muted,marginTop:10,textAlign:"right",lineHeight:1.6}}>
-              Source: Finnhub annual series via smart-api <code>business_health</code> (5y) + <code>screen</code> (TTM levels) · S-REIT rows from <code>reit_metrics</code>.<br/>
-              Net debt/EBITDA and interest coverage are NOT available client-side — they need an edge-side feed.
+              Leverage &amp; margins: one pinned source — Yahoo <code>fundamentals-timeseries</code> (fiscal-year, as-reported) via smart-api <code>red_flags</code> v86. All markets.<br/>
+              ROIC / FCF / dilution: Finnhub annual series via <code>business_health</code> — US non-ETF only, supplementary. S-REIT rows from <code>reit_metrics</code>.
             </div>
           </>);
         })()}
@@ -9421,7 +9462,7 @@ function App(){
           <div>
             <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
               <div style={{display:"flex",alignItems:"center",gap:6}}>
-                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:09:08-09:17</span></div>
+                <div style={{fontSize:14,color:C.muted,fontWeight:700,letterSpacing:"0.1em"}}>IGNITUS PORTFOLIO{mktFilter!=="ALL"&&<span style={{color:C.accent,fontWeight:700,background:C.accent+"18",padding:"2px 6px",borderRadius:4,marginLeft:4}}>{mktFilter==="CN"?"HK":mktFilter}</span>} <span style={{color:C.green,fontWeight:900,background:C.green+"22",padding:"2px 6px",borderRadius:4,marginLeft:4}}>v2026:09:08-14:05</span></div>
                 <button title="Sign out" onClick={()=>{if(window.portfolioDB?.signOut)window.portfolioDB.signOut();else{localStorage.removeItem('ign_jwt');localStorage.removeItem('ign_refresh');location.reload();}}} style={{fontSize:11,color:C.muted,background:"transparent",border:"none",cursor:"pointer",padding:"2px 4px",borderRadius:4,lineHeight:1}} onMouseEnter={e=>e.target.style.color="#FF5577"} onMouseLeave={e=>e.target.style.color=C.muted}>⏏</button>
               </div>
               <div title={dbStatus==="error"?"DB save failed":dbStatus==="saving"?"Saving...":dbStatus==="saved"?"Saved to DB":"DB ready"} style={{width:6,height:6,borderRadius:3,background:dbStatus==="error"?C.red:dbStatus==="saving"?C.gold:dbStatus==="saved"?C.green:C.border,transition:"background 0.4s"}}/>
